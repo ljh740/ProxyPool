@@ -11,6 +11,7 @@ services:
       UPSTREAM_HOST: ${UPSTREAM_HOST:-proxy.example.com}
       UP_USER: ${UP_USER:-foo}
       UP_PASS: ${UP_PASS:-bar}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
       PORT_FIRST: ${PORT_FIRST:-10001}
       PORT_LAST: ${PORT_LAST:-10100}
       MODE: ${MODE:-shared}

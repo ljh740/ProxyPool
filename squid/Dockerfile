@@ -8,6 +8,6 @@ COPY helper /opt/helper
 COPY scripts /opt/scripts
 COPY squid/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /entrypoint.sh /opt/helper/router.py /opt/scripts/gen_squid_conf.py
+RUN chmod +x /entrypoint.sh /opt/helper/router.py /opt/helper/auth.py /opt/scripts/gen_squid_conf.py
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -20,11 +20,9 @@ Sticky upstream proxy router built on Squid with switchable routing modes.
    - `docker compose up --build`
 
 ## Usage
-Set client proxy to Squid:
-- `HTTP_PROXY=http://userA:x@localhost:3128`
-- `HTTPS_PROXY=http://userA:x@localhost:3128`
-
-Any password value is accepted; the username drives routing.
+Set client proxy to Squid (password is required):
+- `HTTP_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
+- `HTTPS_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
 
 ## Validation
 - Logic-only: `./scripts/verify.sh`
@@ -34,6 +32,7 @@ Any password value is accepted; the username drives routing.
 ## Configuration
 Edit `.env` for your setup:
 - `UPSTREAM_HOST`, `UP_USER`, `UP_PASS`
+- `AUTH_PASSWORD` (fixed password for all users)
 - `PORT_FIRST`, `PORT_LAST`
 - `MODE` = shared | exclusive | shared_capped
 - `SALT` (keep stable to preserve stickiness)

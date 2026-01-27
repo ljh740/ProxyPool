@@ -28,7 +28,7 @@ def main():
     print("visible_hostname proxy")
     print("http_port 3128")
     print("")
-    print("auth_param basic program /usr/lib/squid/basic_fake_auth")
+    print("auth_param basic program /opt/helper/auth.py")
     print("auth_param basic children 5")
     print("auth_param basic realm Proxy")
     print("auth_param basic credentialsttl 1 hour")

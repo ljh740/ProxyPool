@@ -36,8 +36,16 @@ fi
 VERIFY_URL=${VERIFY_URL:-https://ipinfo.io/json}
 PROXY_HOST=${PROXY_HOST:-localhost}
 PROXY_PORT=${PROXY_PORT:-3128}
-PROXY_PASS=${PROXY_PASS:-x}
+PROXY_PASS=${PROXY_PASS:-}
 DEBUG=${DEBUG:-0}
+
+if [ -z "$PROXY_PASS" ] && [ -f .env ]; then
+  PROXY_PASS=$(grep -E '^AUTH_PASSWORD=' .env | head -n 1 | sed 's/^AUTH_PASSWORD=//')
+fi
+if [ -z "$PROXY_PASS" ]; then
+  echo "PROXY_PASS not set. Set PROXY_PASS or AUTH_PASSWORD in .env"
+  exit 1
+fi
 
 SAMPLE_USERS=${SAMPLE_USERS:-5}
 if [ "$SAMPLE_USERS" -lt 1 ]; then
