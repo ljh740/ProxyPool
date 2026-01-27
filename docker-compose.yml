@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  squid:
+    build:
+      context: .
+      dockerfile: squid/Dockerfile
+    ports:
+      - "3128:3128"
+    environment:
+      UPSTREAM_HOST: ${UPSTREAM_HOST:-proxy.example.com}
+      UP_USER: ${UP_USER:-foo}
+      UP_PASS: ${UP_PASS:-bar}
+      PORT_FIRST: ${PORT_FIRST:-10001}
+      PORT_LAST: ${PORT_LAST:-10100}
+      MODE: ${MODE:-shared}
+      SALT: ${SALT:-change-me}
+      EXCLUSIVE_FALLBACK: ${EXCLUSIVE_FALLBACK:-deny}
+      TTL_SECONDS: ${TTL_SECONDS:-0}
+      CAP_PER_PORT: ${CAP_PER_PORT:-2}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      ROUTER_DEBUG_LOG: ${ROUTER_DEBUG_LOG:-}
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine

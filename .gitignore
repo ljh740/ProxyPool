@@ -1,0 +1,6 @@
+.ace-tool/
+.env
+.env.*
+!.env.example
+router-debug*.log
+__pycache__/
