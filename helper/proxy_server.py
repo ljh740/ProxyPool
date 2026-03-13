@@ -27,6 +27,7 @@ FILTERED_REQUEST_HEADERS = {
     "proxy-connection",
     "upgrade",
 }
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 LOGGER = logging.getLogger("proxy_server")
 
 
@@ -56,6 +57,9 @@ class ProxyConfig:
     connect_timeout: float
     connect_retries: int
     relay_timeout: float
+    loopback_host_mode: str
+    host_loopback_address: str
+    running_in_docker: bool
 
     @classmethod
     def from_env(cls):
@@ -67,10 +71,15 @@ class ProxyConfig:
             connect_timeout=env_float("UPSTREAM_CONNECT_TIMEOUT", 20.0),
             connect_retries=max(1, env_int("UPSTREAM_CONNECT_RETRIES", 3)),
             relay_timeout=env_float("RELAY_TIMEOUT", 120.0),
+            loopback_host_mode=os.getenv("REWRITE_LOOPBACK_TO_HOST", "auto").lower(),
+            host_loopback_address=os.getenv("HOST_LOOPBACK_ADDRESS", "host.docker.internal"),
+            running_in_docker=is_running_in_docker(),
         )
 
         if not config.auth_password:
             raise ValueError("AUTH_PASSWORD must be configured")
+        if config.loopback_host_mode not in {"auto", "always", "off"}:
+            raise ValueError("REWRITE_LOOPBACK_TO_HOST must be auto, always, or off")
         if "\\~" in os.getenv("UP_PASS", ""):
             LOGGER.warning(
                 "UP_PASS contains literal '\\~'. In .env files that usually means a shell escape was copied literally."
@@ -108,6 +117,25 @@ def env_float(name, default):
         return float(value)
     except ValueError:
         return default
+
+
+def is_running_in_docker():
+    return os.path.exists("/.dockerenv")
+
+
+def should_rewrite_first_hop_loopback(config):
+    if config.loopback_host_mode == "always":
+        return True
+    if config.loopback_host_mode == "off":
+        return False
+    return config.running_in_docker
+
+
+def resolve_hop_host(config, hop, hop_index):
+    if hop_index == 0 and should_rewrite_first_hop_loopback(config):
+        if hop.host.lower() in LOOPBACK_HOSTS:
+            return config.host_loopback_address
+    return hop.host
 
 
 def build_router():
@@ -289,11 +317,15 @@ def discard_socks_reply_address(sock, atyp):
     raise UpstreamError(f"Unsupported SOCKS5 address type {atyp}")
 
 
-def open_socks5_tunnel(config, upstream_entry, dest_host, dest_port):
-    sock = socket.create_connection((upstream_entry.host, upstream_entry.port), config.connect_timeout)
+def open_first_hop_socket(config, hop):
+    host = resolve_hop_host(config, hop, 0)
+    sock = socket.create_connection((host, hop.port), config.connect_timeout)
     sock.settimeout(config.connect_timeout)
+    return sock
 
-    if upstream_entry.username or upstream_entry.password:
+
+def establish_socks5_tunnel(sock, hop, dest_host, dest_port):
+    if hop.username or hop.password:
         methods = bytes([0x05, 0x01, 0x02])
     else:
         methods = bytes([0x05, 0x01, 0x00])
@@ -304,8 +336,8 @@ def open_socks5_tunnel(config, upstream_entry, dest_host, dest_port):
     if method == 0xFF:
         raise UpstreamError("SOCKS5 upstream rejected all auth methods")
     if method == 0x02:
-        username = upstream_entry.username.encode("utf-8")
-        password = upstream_entry.password.encode("utf-8")
+        username = hop.username.encode("utf-8")
+        password = hop.password.encode("utf-8")
         if len(username) > 255 or len(password) > 255:
             raise UpstreamError("SOCKS5 credentials exceed protocol limits")
         payload = (
@@ -330,10 +362,6 @@ def open_socks5_tunnel(config, upstream_entry, dest_host, dest_port):
     if reply != 0x00:
         raise UpstreamError(f"SOCKS5 upstream connect failed with code {reply}")
 
-    sock.settimeout(None)
-    return sock
-
-
 def read_http_headers_from_socket(sock):
     buffer = bytearray()
     while b"\r\n\r\n" not in buffer:
@@ -346,17 +374,15 @@ def read_http_headers_from_socket(sock):
     return bytes(buffer)
 
 
-def open_http_tunnel(config, upstream_entry, dest_host, dest_port):
-    sock = socket.create_connection((upstream_entry.host, upstream_entry.port), config.connect_timeout)
-    sock.settimeout(config.connect_timeout)
+def establish_http_tunnel(sock, hop, dest_host, dest_port):
     headers = [
         f"CONNECT {dest_host}:{dest_port} HTTP/1.1",
         f"Host: {dest_host}:{dest_port}",
         "Proxy-Connection: Keep-Alive",
     ]
-    if upstream_entry.username or upstream_entry.password:
+    if hop.username or hop.password:
         headers.append(
-            f"Proxy-Authorization: {build_basic_authorization(upstream_entry.username, upstream_entry.password)}"
+            f"Proxy-Authorization: {build_basic_authorization(hop.username, hop.password)}"
         )
     payload = ("\r\n".join(headers) + "\r\n\r\n").encode("iso-8859-1")
     sock.sendall(payload)
@@ -370,20 +396,40 @@ def open_http_tunnel(config, upstream_entry, dest_host, dest_port):
     if status_code != 200:
         raise UpstreamError(f"HTTP upstream CONNECT failed with status {status_code}")
 
-    sock.settimeout(None)
-    return sock
-
 
 def open_upstream_tunnel(config, upstream_entry, dest_host, dest_port):
     last_error = None
     for attempt in range(config.connect_retries):
+        sock = None
         try:
-            if upstream_entry.scheme in {"socks5", "socks5h"}:
-                return open_socks5_tunnel(config, upstream_entry, dest_host, dest_port)
-            if upstream_entry.scheme == "http":
-                return open_http_tunnel(config, upstream_entry, dest_host, dest_port)
-            raise UpstreamError(f"Unsupported upstream scheme {upstream_entry.scheme}")
+            first_hop = upstream_entry.first_hop
+            sock = open_first_hop_socket(config, first_hop)
+
+            for hop_index, hop in enumerate(upstream_entry.hops):
+                if hop_index + 1 < upstream_entry.chain_length:
+                    next_hop = upstream_entry.hops[hop_index + 1]
+                    next_host = next_hop.host
+                    next_port = next_hop.port
+                else:
+                    next_host = dest_host
+                    next_port = dest_port
+
+                if hop.scheme in {"socks5", "socks5h"}:
+                    establish_socks5_tunnel(sock, hop, next_host, next_port)
+                    continue
+                if hop.scheme == "http":
+                    establish_http_tunnel(sock, hop, next_host, next_port)
+                    continue
+                raise UpstreamError(f"Unsupported upstream scheme {hop.scheme}")
+
+            sock.settimeout(None)
+            return sock
         except (OSError, UpstreamError) as exc:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             last_error = exc
             if attempt + 1 >= config.connect_retries:
                 break
@@ -564,25 +610,24 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
 
     def handle_http_request(self, request, username, upstream_entry):
         headers = replace_header(filter_headers(request.headers), "Connection", "close")
-        if upstream_entry.scheme == "http":
-            headers = replace_header(
-                headers,
-                "Proxy-Authorization",
-                build_basic_authorization(
-                    upstream_entry.username,
-                    upstream_entry.password,
-                ),
-            )
+        first_hop = upstream_entry.first_hop
+        if upstream_entry.chain_length == 1 and first_hop.scheme == "http":
+            if first_hop.username or first_hop.password:
+                headers = replace_header(
+                    headers,
+                    "Proxy-Authorization",
+                    build_basic_authorization(
+                        first_hop.username,
+                        first_hop.password,
+                    ),
+                )
             request_bytes = format_request(
                 request.method,
                 rebuild_absolute_target(request, headers),
                 request.version,
                 headers,
             )
-            upstream_socket = socket.create_connection(
-                (upstream_entry.host, upstream_entry.port),
-                self.server.config.connect_timeout,
-            )
+            upstream_socket = open_first_hop_socket(self.server.config, first_hop)
         else:
             request_bytes = format_request(
                 request.method,
@@ -590,7 +635,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
                 request.version,
                 headers,
             )
-            upstream_socket = open_socks5_tunnel(
+            upstream_socket = open_upstream_tunnel(
                 self.server.config,
                 upstream_entry,
                 request.host,
@@ -628,7 +673,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             return
         upstream_display = "-"
         if upstream_entry is not None:
-            upstream_display = f"{upstream_entry.scheme}://{upstream_entry.host}:{upstream_entry.port} ({upstream_entry.key})"
+            upstream_display = f"{upstream_entry.display} ({upstream_entry.key})"
         LOGGER.info(
             "%s user=%s method=%s target=%s upstream=%s result=%s",
             self.client_address[0],

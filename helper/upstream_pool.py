@@ -4,10 +4,11 @@ import csv
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 from urllib.parse import unquote, urlsplit
 
 SUPPORTED_UPSTREAM_SCHEMES = {"http", "socks5", "socks5h"}
+CHAIN_SEPARATOR = "|"
 
 
 def env_int(name, default):
@@ -21,14 +22,39 @@ def env_int(name, default):
 
 
 @dataclass(frozen=True)
-class UpstreamEntry:
-    key: str
-    label: str
+class UpstreamHop:
     scheme: str
     host: str
     port: int
     username: str
     password: str
+
+    @property
+    def display(self):
+        return f"{self.scheme}://{self.host}:{self.port}"
+
+
+@dataclass(frozen=True)
+class UpstreamEntry:
+    key: str
+    label: str
+    hops: Tuple[UpstreamHop, ...]
+
+    def __post_init__(self):
+        if not self.hops:
+            raise ValueError("Upstream entry must contain at least one hop")
+
+    @property
+    def chain_length(self):
+        return len(self.hops)
+
+    @property
+    def first_hop(self):
+        return self.hops[0]
+
+    @property
+    def display(self):
+        return " -> ".join(hop.display for hop in self.hops)
 
 
 @dataclass(frozen=True)
@@ -82,11 +108,15 @@ def build_range_pool():
             UpstreamEntry(
                 key=key,
                 label=key,
-                scheme=scheme,
-                host=host,
-                port=port,
-                username=username,
-                password=password,
+                hops=(
+                    UpstreamHop(
+                        scheme=scheme,
+                        host=host,
+                        port=port,
+                        username=username,
+                        password=password,
+                    ),
+                ),
             )
         )
     return UpstreamPool(source="range", entries=entries)
@@ -120,11 +150,7 @@ def parse_colon_line(line, default_scheme, default_username, default_password):
     raise ValueError("Expected host:port or host:port:user:pass")
 
 
-def parse_upstream_line(line, index, default_scheme, default_username, default_password):
-    raw = line.strip()
-    if not raw or raw.startswith("#"):
-        return None
-
+def parse_upstream_hop(raw, default_scheme, default_username, default_password):
     if "://" in raw:
         parsed = urlsplit(raw)
         scheme = ensure_supported_scheme(parsed.scheme)
@@ -132,8 +158,13 @@ def parse_upstream_line(line, index, default_scheme, default_username, default_p
             raise ValueError("Missing host in upstream URL")
         if parsed.port is None:
             raise ValueError("Missing port in upstream URL")
-        username = unquote(parsed.username or default_username)
-        password = unquote(parsed.password or default_password)
+
+        if parsed.username is None and parsed.password is None:
+            username = default_username
+            password = default_password
+        else:
+            username = unquote(parsed.username or "")
+            password = unquote(parsed.password or "")
         host = parsed.hostname
         port = parsed.port
     else:
@@ -162,15 +193,45 @@ def parse_upstream_line(line, index, default_scheme, default_username, default_p
     if port <= 0 or port > 65535:
         raise ValueError(f"Invalid port '{port}'")
 
-    entry_number = index + 1
-    return UpstreamEntry(
-        key=f"upstream_{entry_number}",
-        label=f"{host}:{port}#{entry_number}",
+    return UpstreamHop(
         scheme=scheme,
         host=host,
         port=port,
         username=username,
         password=password,
+    )
+
+
+def parse_upstream_line(line, index, default_scheme, default_username, default_password):
+    raw = line.strip()
+    if not raw or raw.startswith("#"):
+        return None
+
+    hop_parts = [part.strip() for part in raw.split(CHAIN_SEPARATOR)]
+    hop_parts = [part for part in hop_parts if part]
+    if not hop_parts:
+        return None
+
+    hops = []
+    last_hop_index = len(hop_parts) - 1
+    for hop_index, hop_raw in enumerate(hop_parts):
+        hop_default_username = default_username if hop_index == last_hop_index else ""
+        hop_default_password = default_password if hop_index == last_hop_index else ""
+        hops.append(
+            parse_upstream_hop(
+                hop_raw,
+                default_scheme,
+                hop_default_username,
+                hop_default_password,
+            )
+        )
+
+    entry_number = index + 1
+    label = " -> ".join(f"{hop.host}:{hop.port}" for hop in hops)
+    return UpstreamEntry(
+        key=f"upstream_{entry_number}",
+        label=f"{label}#{entry_number}",
+        hops=tuple(hops),
     )
 
 
@@ -228,9 +289,7 @@ def main():
         return
     if command == "list":
         for entry in pool.entries:
-            print(
-                f"{entry.key}\t{entry.label}\t{entry.scheme}://{entry.host}:{entry.port}"
-            )
+            print(f"{entry.key}\t{entry.label}\t{entry.display}")
         return
 
     print_usage()

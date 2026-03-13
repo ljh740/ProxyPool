@@ -4,3 +4,5 @@ socks5://user:pass@dc.decodo.com:10002
 # You can also use:
 # dc.decodo.com:10003:user:pass
 # http,proxy.example.com,8080,user,pass
+# Chain example:
+# http://127.0.0.1:30001 | socks5://user:pass@dc.decodo.com:10001

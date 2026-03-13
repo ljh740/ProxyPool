@@ -7,6 +7,7 @@ Sticky upstream proxy router with switchable routing modes.
 - Client auth + routing decision: Python helper
 - State (exclusive/shared_capped): Redis
 - Upstream proxies: either generated from one host + port range, or imported as a line-based list
+- Upstream chains: supports single-hop or multi-hop proxy chains
 - Supported upstream schemes: `http`, `socks5`, `socks5h`
 
 ## Features
@@ -37,6 +38,8 @@ Edit `.env` for your setup:
 - `UPSTREAM_LIST_FILE` for line-based upstream imports
 - `UPSTREAM_LIST` for newline-separated inline imports from shell / CI
 - `UPSTREAM_CONNECT_RETRIES` for transient upstream handshake retries
+- `REWRITE_LOOPBACK_TO_HOST` = auto | always | off
+- `HOST_LOOPBACK_ADDRESS` for first-hop loopback rewrite inside Docker
 - `AUTH_PASSWORD` (fixed password for all users)
 - `PORT_FIRST`, `PORT_LAST`
 - `MODE` = shared | exclusive | shared_capped
@@ -54,13 +57,17 @@ Edit `.env` for your setup:
 - **Range mode**: keep `UPSTREAM_LIST_FILE` empty and set `UPSTREAM_HOST`, `PORT_FIRST`, `PORT_LAST`, and shared credentials.
 - **File mode**: put one upstream per line into `./config/upstreams.txt`, set `UPSTREAM_LIST_FILE=/opt/config/upstreams.txt`, then restart `squid`.
 - **Inline text mode**: export `UPSTREAM_LIST` as newline-separated text before `docker compose up`; useful for quick imports, but file mode is more practical for 1000+ entries.
+- **Chain mode**: join hops with ` | `, for example `http://127.0.0.1:30001 | socks5://user:pass@dc.decodo.com:10001`.
 - Supported line formats:
   - `socks5://user:pass@host:port`
   - `http://user:pass@host:port`
   - `host:port`
   - `host:port:user:pass`
   - `scheme,host,port,user,pass`
+- For chained lines, default `UP_USER` / `UP_PASS` are applied to the last hop only.
 - If a line omits credentials, the default `UP_USER` / `UP_PASS` values are used.
 - To generate a large list from a host + port range, run `python3 scripts/generate_upstream_list.py --output config/upstreams.txt`.
 - To import raw text directly, use `export UPSTREAM_LIST="$(cat config/upstreams.txt)"`.
+- To generate chained output, use `python3 scripts/generate_upstream_list.py --cycle-first-hop http://127.0.0.1:30001 --cycle-first-hop http://127.0.0.1:30002 --output config/upstreams.txt`.
 - The proxy retries transient upstream connect/handshake failures a few times before returning `502`.
+- Inside Docker, only the first chain hop rewrites `127.0.0.1` / `localhost` / `::1` to `host.docker.internal` by default.

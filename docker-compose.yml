@@ -7,6 +7,8 @@ services:
       - "3128:3128"
     volumes:
       - ./config:/opt/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       UPSTREAM_SCHEME: ${UPSTREAM_SCHEME:-http}
       UPSTREAM_HOST: ${UPSTREAM_HOST:-proxy.example.com}
@@ -16,6 +18,8 @@ services:
       UPSTREAM_LIST: ${UPSTREAM_LIST:-}
       AUTH_PASSWORD: ${AUTH_PASSWORD:-}
       UPSTREAM_CONNECT_RETRIES: ${UPSTREAM_CONNECT_RETRIES:-3}
+      REWRITE_LOOPBACK_TO_HOST: ${REWRITE_LOOPBACK_TO_HOST:-auto}
+      HOST_LOOPBACK_ADDRESS: ${HOST_LOOPBACK_ADDRESS:-host.docker.internal}
       PORT_FIRST: ${PORT_FIRST:-10001}
       PORT_LAST: ${PORT_LAST:-10100}
       MODE: ${MODE:-shared}

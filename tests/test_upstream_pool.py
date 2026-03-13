@@ -32,7 +32,7 @@ class UpstreamPoolTests(unittest.TestCase):
         self.assertEqual(pool.source, "range")
         self.assertEqual(pool.count, 3)
         self.assertEqual(pool.entries[0].key, "10001")
-        self.assertEqual(pool.entries[-1].port, 10003)
+        self.assertEqual(pool.entries[-1].first_hop.port, 10003)
 
     def test_parse_upstream_line_supports_uri(self):
         entry = parse_upstream_line(
@@ -42,11 +42,12 @@ class UpstreamPoolTests(unittest.TestCase):
             "",
             "",
         )
-        self.assertEqual(entry.scheme, "socks5")
-        self.assertEqual(entry.host, "dc.decodo.com")
-        self.assertEqual(entry.port, 10001)
-        self.assertEqual(entry.username, "user")
-        self.assertEqual(entry.password, "pass")
+        hop = entry.first_hop
+        self.assertEqual(hop.scheme, "socks5")
+        self.assertEqual(hop.host, "dc.decodo.com")
+        self.assertEqual(hop.port, 10001)
+        self.assertEqual(hop.username, "user")
+        self.assertEqual(hop.password, "pass")
 
     def test_parse_upstream_line_supports_colon_format(self):
         entry = parse_upstream_line(
@@ -56,16 +57,31 @@ class UpstreamPoolTests(unittest.TestCase):
             "",
             "",
         )
-        self.assertEqual(entry.scheme, "socks5")
+        self.assertEqual(entry.first_hop.scheme, "socks5")
         self.assertEqual(entry.key, "upstream_2")
-        self.assertEqual(entry.password, "pass")
+        self.assertEqual(entry.first_hop.password, "pass")
+
+    def test_parse_upstream_line_supports_chain_mode(self):
+        entry = parse_upstream_line(
+            "http://127.0.0.1:30001 | dc.decodo.com:10001",
+            0,
+            "socks5",
+            "default-user",
+            "default-pass",
+        )
+        self.assertEqual(entry.chain_length, 2)
+        self.assertEqual(entry.hops[0].scheme, "http")
+        self.assertEqual(entry.hops[0].username, "")
+        self.assertEqual(entry.hops[1].scheme, "socks5")
+        self.assertEqual(entry.hops[1].username, "default-user")
+        self.assertEqual(entry.hops[1].password, "default-pass")
 
     def test_load_upstream_pool_from_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "upstreams.txt")
             with open(file_path, "w", encoding="utf-8") as handle:
                 handle.write("# comment\n")
-                handle.write("socks5://u1:p1@dc.decodo.com:10001\n")
+                handle.write("http://127.0.0.1:30001 | socks5://u1:p1@dc.decodo.com:10001\n")
                 handle.write("dc.decodo.com:10002:u2:p2\n")
 
             with patch.dict(
@@ -80,7 +96,8 @@ class UpstreamPoolTests(unittest.TestCase):
 
         self.assertEqual(pool.source, "file")
         self.assertEqual(pool.count, 2)
-        self.assertEqual(pool.entries[1].port, 10002)
+        self.assertEqual(pool.entries[0].chain_length, 2)
+        self.assertEqual(pool.entries[1].first_hop.port, 10002)
 
     def test_load_upstream_pool_from_inline_text(self):
         with patch.dict(
@@ -98,10 +115,10 @@ class UpstreamPoolTests(unittest.TestCase):
 
         self.assertEqual(pool.source, "inline")
         self.assertEqual(pool.count, 2)
-        self.assertEqual(pool.entries[0].username, "default-user")
-        self.assertEqual(pool.entries[0].password, "default-pass")
-        self.assertEqual(pool.entries[1].username, "user2")
-        self.assertEqual(pool.entries[1].password, "pass2")
+        self.assertEqual(pool.entries[0].first_hop.username, "default-user")
+        self.assertEqual(pool.entries[0].first_hop.password, "default-pass")
+        self.assertEqual(pool.entries[1].first_hop.username, "user2")
+        self.assertEqual(pool.entries[1].first_hop.password, "pass2")
 
 
 if __name__ == "__main__":

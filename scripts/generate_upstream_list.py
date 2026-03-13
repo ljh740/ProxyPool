@@ -34,6 +34,15 @@ def build_csv_line(scheme, host, port, username, password):
     return ",".join([scheme, host, str(port), username, password])
 
 
+def build_output_line(separator, static_hops, cycled_hops, index, generated_hop):
+    hops = []
+    if cycled_hops:
+        hops.append(cycled_hops[index % len(cycled_hops)])
+    hops.extend(static_hops)
+    hops.append(generated_hop)
+    return separator.join(hops)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate line-based upstream proxy lists from one host + port range."
@@ -55,6 +64,23 @@ def parse_args():
         default="-",
         help="Output file path. Use - for stdout.",
     )
+    parser.add_argument(
+        "--prepend-hop",
+        action="append",
+        default=[],
+        help="Prepend a fixed hop before each generated upstream hop. Can be repeated.",
+    )
+    parser.add_argument(
+        "--cycle-first-hop",
+        action="append",
+        default=[],
+        help="Cycle these first-hop values across generated lines. Can be repeated.",
+    )
+    parser.add_argument(
+        "--separator",
+        default=" | ",
+        help="Separator used when composing chained hops.",
+    )
     return parser.parse_args()
 
 
@@ -73,7 +99,21 @@ def main():
         "csv": lambda port: build_csv_line(args.scheme, args.host, port, args.username, args.password),
     }
 
-    lines = [builders[args.format](port) for port in range(args.port_first, args.port_last + 1)]
+    static_hops = [value.strip() for value in args.prepend_hop if value.strip()]
+    cycled_hops = [value.strip() for value in args.cycle_first_hop if value.strip()]
+
+    lines = []
+    for index, port in enumerate(range(args.port_first, args.port_last + 1)):
+        generated_hop = builders[args.format](port)
+        lines.append(
+            build_output_line(
+                args.separator,
+                static_hops,
+                cycled_hops,
+                index,
+                generated_hop,
+            )
+        )
     content = "\n".join(lines) + "\n"
 
     if args.output == "-":
