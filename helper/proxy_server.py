@@ -10,7 +10,7 @@ import socket
 import socketserver
 import sys
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 from urllib.parse import urlsplit
 
 from auth import check_password
@@ -53,39 +53,25 @@ class ProxyConfig:
     listen_port: int
     auth_password: str
     auth_realm: str
-    upstream_scheme: str
-    upstream_host: str
-    upstream_user: str
-    upstream_pass: str
     connect_timeout: float
+    connect_retries: int
     relay_timeout: float
 
     @classmethod
     def from_env(cls):
-        upstream_scheme = (os.getenv("UPSTREAM_SCHEME", "http") or "http").lower()
-        if upstream_scheme not in SUPPORTED_UPSTREAM_SCHEMES:
-            raise ValueError(
-                f"UPSTREAM_SCHEME must be one of {', '.join(sorted(SUPPORTED_UPSTREAM_SCHEMES))}"
-            )
-
         config = cls(
             listen_host=os.getenv("PROXY_HOST", "0.0.0.0"),
             listen_port=env_int("PROXY_PORT", 3128),
             auth_password=os.getenv("AUTH_PASSWORD", ""),
             auth_realm=os.getenv("AUTH_REALM", "Proxy"),
-            upstream_scheme=upstream_scheme,
-            upstream_host=os.getenv("UPSTREAM_HOST", ""),
-            upstream_user=os.getenv("UP_USER", ""),
-            upstream_pass=os.getenv("UP_PASS", ""),
             connect_timeout=env_float("UPSTREAM_CONNECT_TIMEOUT", 20.0),
+            connect_retries=max(1, env_int("UPSTREAM_CONNECT_RETRIES", 3)),
             relay_timeout=env_float("RELAY_TIMEOUT", 120.0),
         )
 
         if not config.auth_password:
             raise ValueError("AUTH_PASSWORD must be configured")
-        if not config.upstream_host:
-            raise ValueError("UPSTREAM_HOST must be configured")
-        if "\\~" in config.upstream_pass:
+        if "\\~" in os.getenv("UP_PASS", ""):
             LOGGER.warning(
                 "UP_PASS contains literal '\\~'. In .env files that usually means a shell escape was copied literally."
             )
@@ -265,13 +251,6 @@ def split_host_port(value, default_port):
     return value, default_port
 
 
-def resolve_route(router, username):
-    port = router.route(username)
-    if port is None and router.mode == "exclusive" and router.exclusive_fallback == "shared":
-        port = router._shared_port(username)
-    return port
-
-
 def encode_socks_address(host, port):
     try:
         address = ipaddress.ip_address(host)
@@ -310,11 +289,11 @@ def discard_socks_reply_address(sock, atyp):
     raise UpstreamError(f"Unsupported SOCKS5 address type {atyp}")
 
 
-def open_socks5_tunnel(config, upstream_port, dest_host, dest_port):
-    sock = socket.create_connection((config.upstream_host, upstream_port), config.connect_timeout)
+def open_socks5_tunnel(config, upstream_entry, dest_host, dest_port):
+    sock = socket.create_connection((upstream_entry.host, upstream_entry.port), config.connect_timeout)
     sock.settimeout(config.connect_timeout)
 
-    if config.upstream_user or config.upstream_pass:
+    if upstream_entry.username or upstream_entry.password:
         methods = bytes([0x05, 0x01, 0x02])
     else:
         methods = bytes([0x05, 0x01, 0x00])
@@ -325,8 +304,8 @@ def open_socks5_tunnel(config, upstream_port, dest_host, dest_port):
     if method == 0xFF:
         raise UpstreamError("SOCKS5 upstream rejected all auth methods")
     if method == 0x02:
-        username = config.upstream_user.encode("utf-8")
-        password = config.upstream_pass.encode("utf-8")
+        username = upstream_entry.username.encode("utf-8")
+        password = upstream_entry.password.encode("utf-8")
         if len(username) > 255 or len(password) > 255:
             raise UpstreamError("SOCKS5 credentials exceed protocol limits")
         payload = (
@@ -367,17 +346,17 @@ def read_http_headers_from_socket(sock):
     return bytes(buffer)
 
 
-def open_http_tunnel(config, upstream_port, dest_host, dest_port):
-    sock = socket.create_connection((config.upstream_host, upstream_port), config.connect_timeout)
+def open_http_tunnel(config, upstream_entry, dest_host, dest_port):
+    sock = socket.create_connection((upstream_entry.host, upstream_entry.port), config.connect_timeout)
     sock.settimeout(config.connect_timeout)
     headers = [
         f"CONNECT {dest_host}:{dest_port} HTTP/1.1",
         f"Host: {dest_host}:{dest_port}",
         "Proxy-Connection: Keep-Alive",
     ]
-    if config.upstream_user or config.upstream_pass:
+    if upstream_entry.username or upstream_entry.password:
         headers.append(
-            f"Proxy-Authorization: {build_basic_authorization(config.upstream_user, config.upstream_pass)}"
+            f"Proxy-Authorization: {build_basic_authorization(upstream_entry.username, upstream_entry.password)}"
         )
     payload = ("\r\n".join(headers) + "\r\n\r\n").encode("iso-8859-1")
     sock.sendall(payload)
@@ -395,12 +374,27 @@ def open_http_tunnel(config, upstream_port, dest_host, dest_port):
     return sock
 
 
-def open_upstream_tunnel(config, upstream_port, dest_host, dest_port):
-    if config.upstream_scheme in {"socks5", "socks5h"}:
-        return open_socks5_tunnel(config, upstream_port, dest_host, dest_port)
-    if config.upstream_scheme == "http":
-        return open_http_tunnel(config, upstream_port, dest_host, dest_port)
-    raise UpstreamError(f"Unsupported upstream scheme {config.upstream_scheme}")
+def open_upstream_tunnel(config, upstream_entry, dest_host, dest_port):
+    last_error = None
+    for attempt in range(config.connect_retries):
+        try:
+            if upstream_entry.scheme in {"socks5", "socks5h"}:
+                return open_socks5_tunnel(config, upstream_entry, dest_host, dest_port)
+            if upstream_entry.scheme == "http":
+                return open_http_tunnel(config, upstream_entry, dest_host, dest_port)
+            raise UpstreamError(f"Unsupported upstream scheme {upstream_entry.scheme}")
+        except (OSError, UpstreamError) as exc:
+            last_error = exc
+            if attempt + 1 >= config.connect_retries:
+                break
+            LOGGER.warning(
+                "Retrying upstream %s after connect error (%s/%s): %s",
+                upstream_entry.key,
+                attempt + 1,
+                config.connect_retries,
+                exc,
+            )
+    raise UpstreamError(f"Failed to connect upstream {upstream_entry.key}: {last_error}")
 
 
 def relay_bidirectional(left, right, timeout):
@@ -508,30 +502,30 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         self.connection.settimeout(self.server.config.connect_timeout)
         request = None
         username = "-"
-        upstream_port = "-"
+        upstream_entry = None
         try:
             request = read_request(self.rfile)
             if request is None:
                 return
             username = self.authenticate(request.headers)
-            upstream_port = resolve_route(self.server.router, username)
-            if upstream_port is None:
+            upstream_entry = self.server.router.route_entry(username)
+            if upstream_entry is None:
                 raise ClientError(503, "Service Unavailable", "No upstream port available.")
 
             if request.connect_tunnel:
-                self.handle_connect(request, username, upstream_port)
+                self.handle_connect(request, username, upstream_entry)
             else:
-                self.handle_http_request(request, username, upstream_port)
+                self.handle_http_request(request, username, upstream_entry)
         except ClientError as exc:
             self.send_error_response(exc.status_code, exc.reason, exc.body, exc.headers)
-            self.log_request_result(request, username, upstream_port, f"client_error:{exc.status_code}")
+            self.log_request_result(request, username, upstream_entry, f"client_error:{exc.status_code}")
         except UpstreamError as exc:
             self.send_error_response(502, "Bad Gateway", str(exc))
-            self.log_request_result(request, username, upstream_port, f"upstream_error:{exc}")
+            self.log_request_result(request, username, upstream_entry, f"upstream_error:{exc}")
         except Exception as exc:
             LOGGER.exception("Unhandled proxy error")
             self.send_error_response(500, "Internal Server Error", "Unhandled proxy error.")
-            self.log_request_result(request, username, upstream_port, f"internal_error:{exc}")
+            self.log_request_result(request, username, upstream_entry, f"internal_error:{exc}")
 
     def authenticate(self, headers):
         credentials = parse_basic_credentials(header_value(headers, "Proxy-Authorization"))
@@ -552,10 +546,10 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             )
         return username
 
-    def handle_connect(self, request, username, upstream_port):
+    def handle_connect(self, request, username, upstream_entry):
         upstream_socket = open_upstream_tunnel(
             self.server.config,
-            upstream_port,
+            upstream_entry,
             request.host,
             request.port,
         )
@@ -564,19 +558,19 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             self.wfile.flush()
             self.connection.settimeout(None)
             relay_bidirectional(self.connection, upstream_socket, self.server.config.relay_timeout)
-            self.log_request_result(request, username, upstream_port, "ok_tunnel")
+            self.log_request_result(request, username, upstream_entry, "ok_tunnel")
         finally:
             upstream_socket.close()
 
-    def handle_http_request(self, request, username, upstream_port):
+    def handle_http_request(self, request, username, upstream_entry):
         headers = replace_header(filter_headers(request.headers), "Connection", "close")
-        if self.server.config.upstream_scheme == "http":
+        if upstream_entry.scheme == "http":
             headers = replace_header(
                 headers,
                 "Proxy-Authorization",
                 build_basic_authorization(
-                    self.server.config.upstream_user,
-                    self.server.config.upstream_pass,
+                    upstream_entry.username,
+                    upstream_entry.password,
                 ),
             )
             request_bytes = format_request(
@@ -586,7 +580,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
                 headers,
             )
             upstream_socket = socket.create_connection(
-                (self.server.config.upstream_host, upstream_port),
+                (upstream_entry.host, upstream_entry.port),
                 self.server.config.connect_timeout,
             )
         else:
@@ -598,7 +592,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             )
             upstream_socket = open_socks5_tunnel(
                 self.server.config,
-                upstream_port,
+                upstream_entry,
                 request.host,
                 request.port,
             )
@@ -608,7 +602,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             upstream_socket.sendall(request_bytes)
             forward_request_body(self.rfile, upstream_socket, request.headers)
             relay_one_way(upstream_socket, self.connection)
-            self.log_request_result(request, username, upstream_port, "ok_http")
+            self.log_request_result(request, username, upstream_entry, "ok_http")
         finally:
             upstream_socket.close()
 
@@ -629,17 +623,19 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         except OSError:
             pass
 
-    def log_request_result(self, request, username, upstream_port, result):
+    def log_request_result(self, request, username, upstream_entry, result):
         if request is None:
             return
+        upstream_display = "-"
+        if upstream_entry is not None:
+            upstream_display = f"{upstream_entry.scheme}://{upstream_entry.host}:{upstream_entry.port} ({upstream_entry.key})"
         LOGGER.info(
-            "%s user=%s method=%s target=%s upstream=%s:%s result=%s",
+            "%s user=%s method=%s target=%s upstream=%s result=%s",
             self.client_address[0],
             username,
             request.method,
             request.target,
-            self.server.config.upstream_host,
-            upstream_port,
+            upstream_display,
             result,
         )
 
@@ -665,11 +661,11 @@ def main():
     router = build_router()
     server = ThreadedTCPServer((config.listen_host, config.listen_port), ProxyRequestHandler, config, router)
     LOGGER.info(
-        "Listening on %s:%s with upstream_scheme=%s upstream_host=%s",
+        "Listening on %s:%s with upstream_source=%s upstream_count=%s",
         config.listen_host,
         config.listen_port,
-        config.upstream_scheme,
-        config.upstream_host,
+        router.upstream_pool.source,
+        router.upstream_pool.count,
     )
     try:
         server.serve_forever()

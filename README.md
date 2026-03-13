@@ -6,7 +6,7 @@ Sticky upstream proxy router with switchable routing modes.
 - Entry proxy: Python HTTP proxy (Docker)
 - Client auth + routing decision: Python helper
 - State (exclusive/shared_capped): Redis
-- Upstream proxies: same host, port range (default 10001-10100), shared credentials
+- Upstream proxies: either generated from one host + port range, or imported as a line-based list
 - Supported upstream schemes: `http`, `socks5`, `socks5h`
 
 ## Features
@@ -33,7 +33,10 @@ Set client proxy to the local entry proxy (password is required):
 ## Configuration
 Edit `.env` for your setup:
 - `UPSTREAM_SCHEME` = http | socks5 | socks5h
-- `UPSTREAM_HOST`, `UP_USER`, `UP_PASS`
+- `UPSTREAM_HOST`, `UP_USER`, `UP_PASS` for range-generated upstreams
+- `UPSTREAM_LIST_FILE` for line-based upstream imports
+- `UPSTREAM_LIST` for newline-separated inline imports from shell / CI
+- `UPSTREAM_CONNECT_RETRIES` for transient upstream handshake retries
 - `AUTH_PASSWORD` (fixed password for all users)
 - `PORT_FIRST`, `PORT_LAST`
 - `MODE` = shared | exclusive | shared_capped
@@ -46,3 +49,18 @@ Edit `.env` for your setup:
 ## Notes
 - `.env` contains credentials and should stay local.
 - In `.env`, write the actual password characters directly. If your shell command used `\~`, that usually means the real password character is `~`.
+
+## Importing 1000+ Upstreams
+- **Range mode**: keep `UPSTREAM_LIST_FILE` empty and set `UPSTREAM_HOST`, `PORT_FIRST`, `PORT_LAST`, and shared credentials.
+- **File mode**: put one upstream per line into `./config/upstreams.txt`, set `UPSTREAM_LIST_FILE=/opt/config/upstreams.txt`, then restart `squid`.
+- **Inline text mode**: export `UPSTREAM_LIST` as newline-separated text before `docker compose up`; useful for quick imports, but file mode is more practical for 1000+ entries.
+- Supported line formats:
+  - `socks5://user:pass@host:port`
+  - `http://user:pass@host:port`
+  - `host:port`
+  - `host:port:user:pass`
+  - `scheme,host,port,user,pass`
+- If a line omits credentials, the default `UP_USER` / `UP_PASS` values are used.
+- To generate a large list from a host + port range, run `python3 scripts/generate_upstream_list.py --output config/upstreams.txt`.
+- To import raw text directly, use `export UPSTREAM_LIST="$(cat config/upstreams.txt)"`.
+- The proxy retries transient upstream connect/handshake failures a few times before returning `502`.

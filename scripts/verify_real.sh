@@ -24,12 +24,10 @@ if [ -z "$squid_id" ]; then
 fi
 
 MODE=$(docker compose exec -T squid sh -c 'printf "%s" "${MODE:-shared}"')
-PORT_FIRST=$(docker compose exec -T squid sh -c 'printf "%s" "${PORT_FIRST:-10001}"')
-PORT_LAST=$(docker compose exec -T squid sh -c 'printf "%s" "${PORT_LAST:-10100}"')
-
-PORT_COUNT=$((PORT_LAST - PORT_FIRST + 1))
-if [ "$PORT_COUNT" -le 0 ]; then
-  echo "invalid port range: $PORT_FIRST-$PORT_LAST"
+UPSTREAM_SOURCE=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py source)
+UPSTREAM_COUNT=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py count)
+if ! [[ "$UPSTREAM_COUNT" =~ ^[0-9]+$ ]] || [ "$UPSTREAM_COUNT" -le 0 ]; then
+  echo "invalid upstream count: $UPSTREAM_COUNT"
   exit 1
 fi
 
@@ -51,8 +49,8 @@ SAMPLE_USERS=${SAMPLE_USERS:-5}
 if [ "$SAMPLE_USERS" -lt 1 ]; then
   SAMPLE_USERS=1
 fi
-if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$PORT_COUNT" ]; then
-  SAMPLE_USERS="$PORT_COUNT"
+if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$UPSTREAM_COUNT" ]; then
+  SAMPLE_USERS="$UPSTREAM_COUNT"
 fi
 
 VERIFY_PREFIX=${VERIFY_PREFIX:-verify_user}
@@ -141,7 +139,7 @@ fi
 unique=$(cut -d' ' -f2 "$ips1" | sort -u | wc -l | tr -d ' ')
 count=$(wc -l < "$ips1" | tr -d ' ')
 
-printf "mode=%s users=%s unique_ips=%s\n" "$MODE" "$count" "$unique"
+printf "mode=%s users=%s unique_ips=%s source=%s\n" "$MODE" "$count" "$unique" "$UPSTREAM_SOURCE"
 cat "$ips1"
 
 echo "ok"

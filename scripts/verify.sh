@@ -16,14 +16,13 @@ if [ -z "$squid_id" ]; then
 fi
 
 MODE=$(docker compose exec -T squid sh -c 'printf "%s" "${MODE:-shared}"')
-PORT_FIRST=$(docker compose exec -T squid sh -c 'printf "%s" "${PORT_FIRST:-10001}"')
-PORT_LAST=$(docker compose exec -T squid sh -c 'printf "%s" "${PORT_LAST:-10100}"')
+UPSTREAM_SOURCE=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py source)
+UPSTREAM_COUNT=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py count)
 EXCLUSIVE_FALLBACK=$(docker compose exec -T squid sh -c 'printf "%s" "${EXCLUSIVE_FALLBACK:-deny}"')
 CAP_PER_PORT=$(docker compose exec -T squid sh -c 'printf "%s" "${CAP_PER_PORT:-2}"')
 
-PORT_COUNT=$((PORT_LAST - PORT_FIRST + 1))
-if [ "$PORT_COUNT" -le 0 ]; then
-  echo "invalid port range: $PORT_FIRST-$PORT_LAST"
+if ! [[ "$UPSTREAM_COUNT" =~ ^[0-9]+$ ]] || [ "$UPSTREAM_COUNT" -le 0 ]; then
+  echo "invalid upstream count: $UPSTREAM_COUNT"
   exit 1
 fi
 
@@ -31,8 +30,8 @@ SAMPLE_USERS=${SAMPLE_USERS:-20}
 if [ "$SAMPLE_USERS" -lt 2 ]; then
   SAMPLE_USERS=2
 fi
-if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$PORT_COUNT" ]; then
-  SAMPLE_USERS="$PORT_COUNT"
+if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$UPSTREAM_COUNT" ]; then
+  SAMPLE_USERS="$UPSTREAM_COUNT"
 fi
 
 VERIFY_PREFIX=${VERIFY_PREFIX:-verify_user}
@@ -92,16 +91,16 @@ fi
 case "$MODE" in
   shared)
     unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=shared sample=$SAMPLE_USERS unique_ports=$unique"
+    echo "mode=shared sample=$SAMPLE_USERS unique_targets=$unique source=$UPSTREAM_SOURCE"
     ;;
   exclusive)
     dup=$(sort "$ports1" | uniq -d | head -n 1 || true)
     if [ -n "$dup" ]; then
-      echo "exclusive check failed: duplicate ports"
+      echo "exclusive check failed: duplicate upstream targets"
       exit 1
     fi
     unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=exclusive sample=$SAMPLE_USERS unique_ports=$unique fallback=$EXCLUSIVE_FALLBACK"
+    echo "mode=exclusive sample=$SAMPLE_USERS unique_targets=$unique fallback=$EXCLUSIVE_FALLBACK source=$UPSTREAM_SOURCE"
     ;;
   shared_capped)
     max=$(sort "$ports1" | uniq -c | awk '{if($1>max)max=$1}END{print max+0}')
@@ -110,7 +109,7 @@ case "$MODE" in
       exit 1
     fi
     unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=shared_capped sample=$SAMPLE_USERS cap=$CAP_PER_PORT unique_ports=$unique"
+    echo "mode=shared_capped sample=$SAMPLE_USERS cap=$CAP_PER_PORT unique_targets=$unique source=$UPSTREAM_SOURCE"
     ;;
   *)
     echo "unknown mode: $MODE"

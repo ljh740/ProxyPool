@@ -4,3 +4,5 @@
 !.env.example
 router-debug*.log
 __pycache__/
+config/*.txt
+!config/upstreams.example.txt
