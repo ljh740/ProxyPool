@@ -4,13 +4,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-
 ROOT = os.path.dirname(os.path.dirname(__file__))
 HELPER_DIR = os.path.join(ROOT, "helper")
 if HELPER_DIR not in sys.path:
     sys.path.insert(0, HELPER_DIR)
 
-from upstream_pool import build_range_pool, load_upstream_pool_from_env, parse_upstream_line
+from upstream_pool import (
+    build_range_pool,
+    load_upstream_pool_from_env,
+    parse_upstream_line,
+)
 
 
 class UpstreamPoolTests(unittest.TestCase):
@@ -76,12 +79,47 @@ class UpstreamPoolTests(unittest.TestCase):
         self.assertEqual(entry.hops[1].username, "default-user")
         self.assertEqual(entry.hops[1].password, "default-pass")
 
+    def test_parse_upstream_line_keeps_pipe_in_password_without_chain_split(self):
+        entry = parse_upstream_line(
+            "dc.decodo.com:10001:user:pa|ss",
+            0,
+            "socks5",
+            "",
+            "",
+        )
+        self.assertEqual(entry.chain_length, 1)
+        self.assertEqual(entry.first_hop.password, "pa|ss")
+
+    def test_parse_upstream_line_uri_inherits_missing_password(self):
+        entry = parse_upstream_line(
+            "socks5://user@dc.decodo.com:10001",
+            0,
+            "socks5",
+            "default-user",
+            "default-pass",
+        )
+        self.assertEqual(entry.first_hop.username, "user")
+        self.assertEqual(entry.first_hop.password, "default-pass")
+
+    def test_parse_upstream_line_uri_inherits_missing_username(self):
+        entry = parse_upstream_line(
+            "socks5://:pass@dc.decodo.com:10001",
+            0,
+            "socks5",
+            "default-user",
+            "default-pass",
+        )
+        self.assertEqual(entry.first_hop.username, "default-user")
+        self.assertEqual(entry.first_hop.password, "pass")
+
     def test_load_upstream_pool_from_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "upstreams.txt")
             with open(file_path, "w", encoding="utf-8") as handle:
                 handle.write("# comment\n")
-                handle.write("http://127.0.0.1:30001 | socks5://u1:p1@dc.decodo.com:10001\n")
+                handle.write(
+                    "http://127.0.0.1:30001 | socks5://u1:p1@dc.decodo.com:10001\n"
+                )
                 handle.write("dc.decodo.com:10002:u2:p2\n")
 
             with patch.dict(

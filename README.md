@@ -32,6 +32,7 @@ Set client proxy to the local entry proxy (password is required):
   - Uses `https://ipinfo.io/json` to check sticky behavior and IP distribution
 - Latency benchmark: `./scripts/benchmark_chain_latency.sh`
   - Compares single-hop vs chained proxy latency and can save rerun artifacts with `RESULT_DIR=...`
+  - Auto-generated chain benchmarks assume host relay proxies already exist on `127.0.0.1:30001..30005`, or you can pass explicit `DIRECT_UPSTREAM_FILE` / `CHAIN_UPSTREAM_FILE`
 
 ## Configuration
 Edit `.env` for your setup:
@@ -59,7 +60,7 @@ Edit `.env` for your setup:
 - **Range mode**: keep `UPSTREAM_LIST_FILE` empty and set `UPSTREAM_HOST`, `PORT_FIRST`, `PORT_LAST`, and shared credentials.
 - **File mode**: put one upstream per line into `./config/upstreams.txt`, set `UPSTREAM_LIST_FILE=/opt/config/upstreams.txt`, then restart `squid`.
 - **Inline text mode**: export `UPSTREAM_LIST` as newline-separated text before `docker compose up`; useful for quick imports, but file mode is more practical for 1000+ entries.
-- **Chain mode**: join hops with ` | `, for example `http://127.0.0.1:30001 | socks5://user:pass@dc.decodo.com:10001`.
+- **Chain mode**: join hops with ` | `, for example `http://127.0.0.1:30001 | socks5://user:pass@dc.decodo.com:10001`. Keep spaces around `|` so passwords containing `|` stay valid.
 - Supported line formats:
   - `socks5://user:pass@host:port`
   - `http://user:pass@host:port`

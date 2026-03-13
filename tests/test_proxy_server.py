@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 
-
 ROOT = os.path.dirname(os.path.dirname(__file__))
 HELPER_DIR = os.path.join(ROOT, "helper")
 if HELPER_DIR not in sys.path:
@@ -14,9 +13,10 @@ from proxy_server import (
     parse_basic_credentials,
     resolve_hop_host,
     resolve_target,
+    should_send_absolute_form,
     split_host_port,
 )
-from upstream_pool import UpstreamHop
+from upstream_pool import UpstreamEntry, UpstreamHop
 
 
 class ProxyServerTests(unittest.TestCase):
@@ -45,16 +45,28 @@ class ProxyServerTests(unittest.TestCase):
     def test_split_host_port_supports_default(self):
         self.assertEqual(split_host_port("example.com", 80), ("example.com", 80))
         self.assertEqual(split_host_port("example.com:443", 80), ("example.com", 443))
-        self.assertEqual(split_host_port("[2001:db8::1]:8443", 80), ("2001:db8::1", 8443))
+        self.assertEqual(
+            split_host_port("[2001:db8::1]:8443", 80), ("2001:db8::1", 8443)
+        )
 
     def test_resolve_target_for_connect(self):
-        host, port, forward_target, connect_tunnel = resolve_target("CONNECT", "ipinfo.io:443", [])
-        self.assertEqual((host, port, forward_target, connect_tunnel), ("ipinfo.io", 443, "ipinfo.io:443", True))
+        host, port, forward_target, connect_tunnel = resolve_target(
+            "CONNECT", "ipinfo.io:443", []
+        )
+        self.assertEqual(
+            (host, port, forward_target, connect_tunnel),
+            ("ipinfo.io", 443, "ipinfo.io:443", True),
+        )
 
     def test_resolve_target_for_http_request(self):
         headers = [("Host", "ipinfo.io")]
-        host, port, forward_target, connect_tunnel = resolve_target("GET", "http://ipinfo.io/json", headers)
-        self.assertEqual((host, port, forward_target, connect_tunnel), ("ipinfo.io", 80, "/json", False))
+        host, port, forward_target, connect_tunnel = resolve_target(
+            "GET", "http://ipinfo.io/json", headers
+        )
+        self.assertEqual(
+            (host, port, forward_target, connect_tunnel),
+            ("ipinfo.io", 80, "/json", False),
+        )
 
     def test_encode_socks_address_for_domain(self):
         payload = encode_socks_address("ipinfo.io", 443)
@@ -75,6 +87,39 @@ class ProxyServerTests(unittest.TestCase):
         config = self.make_config(loopback_host_mode="off")
         hop = UpstreamHop("http", "localhost", 30001, "", "")
         self.assertEqual(resolve_hop_host(config, hop, 0), "localhost")
+
+    def test_should_send_absolute_form_for_chained_http_final_hop(self):
+        request = type("Request", (), {"connect_tunnel": False})()
+        entry = UpstreamEntry(
+            key="upstream_1",
+            label="chain",
+            hops=(
+                UpstreamHop("http", "127.0.0.1", 30001, "", ""),
+                UpstreamHop("http", "proxy.example.com", 8080, "user", "pass"),
+            ),
+        )
+        self.assertTrue(should_send_absolute_form(request, entry))
+
+    def test_should_not_send_absolute_form_for_connect_requests(self):
+        request = type("Request", (), {"connect_tunnel": True})()
+        entry = UpstreamEntry(
+            key="upstream_1",
+            label="chain",
+            hops=(UpstreamHop("http", "proxy.example.com", 8080, "user", "pass"),),
+        )
+        self.assertFalse(should_send_absolute_form(request, entry))
+
+    def test_should_not_send_absolute_form_for_socks_final_hop(self):
+        request = type("Request", (), {"connect_tunnel": False})()
+        entry = UpstreamEntry(
+            key="upstream_1",
+            label="chain",
+            hops=(
+                UpstreamHop("http", "127.0.0.1", 30001, "", ""),
+                UpstreamHop("socks5", "proxy.example.com", 1080, "user", "pass"),
+            ),
+        )
+        self.assertFalse(should_send_absolute_form(request, entry))
 
 
 if __name__ == "__main__":

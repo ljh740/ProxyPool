@@ -2,13 +2,14 @@
 
 import csv
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Tuple
 from urllib.parse import unquote, urlsplit
 
 SUPPORTED_UPSTREAM_SCHEMES = {"http", "socks5", "socks5h"}
-CHAIN_SEPARATOR = "|"
+CHAIN_SEPARATOR_PATTERN = re.compile(r"\s+\|\s+")
 
 
 def env_int(name, default):
@@ -53,6 +54,10 @@ class UpstreamEntry:
         return self.hops[0]
 
     @property
+    def last_hop(self):
+        return self.hops[-1]
+
+    @property
     def display(self):
         return " -> ".join(hop.display for hop in self.hops)
 
@@ -69,7 +74,9 @@ class UpstreamPool:
         keys = [entry.key for entry in self.entries]
         if len(keys) != len(set(keys)):
             raise ValueError("Upstream entry keys must be unique")
-        object.__setattr__(self, "entry_map", {entry.key: entry for entry in self.entries})
+        object.__setattr__(
+            self, "entry_map", {entry.key: entry for entry in self.entries}
+        )
 
     @property
     def count(self):
@@ -158,13 +165,16 @@ def parse_upstream_hop(raw, default_scheme, default_username, default_password):
             raise ValueError("Missing host in upstream URL")
         if parsed.port is None:
             raise ValueError("Missing port in upstream URL")
-
-        if parsed.username is None and parsed.password is None:
-            username = default_username
-            password = default_password
-        else:
-            username = unquote(parsed.username or "")
-            password = unquote(parsed.password or "")
+        username = (
+            default_username
+            if parsed.username in (None, "")
+            else unquote(parsed.username)
+        )
+        password = (
+            default_password
+            if parsed.password in (None, "")
+            else unquote(parsed.password)
+        )
         host = parsed.hostname
         port = parsed.port
     else:
@@ -202,12 +212,14 @@ def parse_upstream_hop(raw, default_scheme, default_username, default_password):
     )
 
 
-def parse_upstream_line(line, index, default_scheme, default_username, default_password):
+def parse_upstream_line(
+    line, index, default_scheme, default_username, default_password
+):
     raw = line.strip()
     if not raw or raw.startswith("#"):
         return None
 
-    hop_parts = [part.strip() for part in raw.split(CHAIN_SEPARATOR)]
+    hop_parts = [part.strip() for part in CHAIN_SEPARATOR_PATTERN.split(raw)]
     hop_parts = [part for part in hop_parts if part]
     if not hop_parts:
         return None
@@ -235,10 +247,14 @@ def parse_upstream_line(line, index, default_scheme, default_username, default_p
     )
 
 
-def build_list_pool(lines: Iterable[str], source, default_scheme, default_username, default_password):
+def build_list_pool(
+    lines: Iterable[str], source, default_scheme, default_username, default_password
+):
     entries = []
     for line in lines:
-        entry = parse_upstream_line(line, len(entries), default_scheme, default_username, default_password)
+        entry = parse_upstream_line(
+            line, len(entries), default_scheme, default_username, default_password
+        )
         if entry is not None:
             entries.append(entry)
     return UpstreamPool(source=source, entries=entries)

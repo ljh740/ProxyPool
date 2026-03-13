@@ -22,7 +22,7 @@ env_file_value() {
   if [ ! -f .env ]; then
     return 0
   fi
-  grep -E "^${key}=" .env | head -n 1 | sed "s/^${key}=//"
+  sed -n "s/^${key}=//p" .env | head -n 1
 }
 
 trim_spaces() {
@@ -62,6 +62,8 @@ fi
 tmp_dir=$(mktemp -d)
 generated_direct_file="$ROOT/config/.benchmark_direct_$$.txt"
 generated_chain_file="$ROOT/config/.benchmark_chain_$$.txt"
+prepared_direct_file="$ROOT/config/.benchmark_direct_input_$$.txt"
+prepared_chain_file="$ROOT/config/.benchmark_chain_input_$$.txt"
 raw_direct="$tmp_dir/direct.tsv"
 raw_chain="$tmp_dir/chain.tsv"
 
@@ -82,13 +84,34 @@ restore_original() {
 }
 
 cleanup() {
-  restore_original
   rm -f "$generated_direct_file" "$generated_chain_file"
+  rm -f "$prepared_direct_file" "$prepared_chain_file"
+  restore_original
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 
-generate_default_files() {
+generate_default_direct_file() {
+  local -a ports=()
+  IFS=',' read -r -a ports <<< "$BENCHMARK_PORTS"
+
+  if [ "${#ports[@]}" -eq 0 ]; then
+    echo "BENCHMARK_PORTS is empty"
+    exit 1
+  fi
+
+  : > "$generated_direct_file"
+  local idx=0
+  while [ "$idx" -lt "${#ports[@]}" ]; do
+    local upstream_port
+    upstream_port=$(trim_spaces "${ports[$idx]}")
+    printf "%s:%s\n" "$UPSTREAM_HOST" "$upstream_port" >> "$generated_direct_file"
+    idx=$((idx + 1))
+  done
+  DIRECT_UPSTREAM_FILE="$generated_direct_file"
+}
+
+generate_default_chain_file() {
   local -a ports=()
   local -a host_ports=()
   IFS=',' read -r -a ports <<< "$BENCHMARK_PORTS"
@@ -98,12 +121,15 @@ generate_default_files() {
     echo "BENCHMARK_PORTS is empty"
     exit 1
   fi
+  if [ "${#host_ports[@]}" -eq 0 ]; then
+    echo "BENCHMARK_HOST_PORTS is empty"
+    exit 1
+  fi
   if [ "${#ports[@]}" -ne "${#host_ports[@]}" ]; then
     echo "BENCHMARK_PORTS and BENCHMARK_HOST_PORTS must contain the same number of values"
     exit 1
   fi
 
-  : > "$generated_direct_file"
   : > "$generated_chain_file"
   local idx=0
   while [ "$idx" -lt "${#ports[@]}" ]; do
@@ -111,17 +137,57 @@ generate_default_files() {
     local host_port
     upstream_port=$(trim_spaces "${ports[$idx]}")
     host_port=$(trim_spaces "${host_ports[$idx]}")
-    printf "%s:%s\n" "$UPSTREAM_HOST" "$upstream_port" >> "$generated_direct_file"
     printf "http://127.0.0.1:%s | %s:%s\n" "$host_port" "$UPSTREAM_HOST" "$upstream_port" >> "$generated_chain_file"
     idx=$((idx + 1))
   done
-
-  DIRECT_UPSTREAM_FILE="$generated_direct_file"
   CHAIN_UPSTREAM_FILE="$generated_chain_file"
 }
 
+prepare_benchmark_input() {
+  local kind="$1"
+  local input_path="$2"
+  local absolute_path
+  local prepared_path
+  if [ -z "$input_path" ]; then
+    return 1
+  fi
+
+  if [[ "$input_path" = /* ]]; then
+    absolute_path="$input_path"
+  else
+    absolute_path="$ROOT/${input_path#./}"
+  fi
+
+  case "$absolute_path" in
+    "$ROOT/config/"*)
+      printf "%s\n" "$absolute_path"
+      return 0
+      ;;
+  esac
+
+  if [ "$kind" = "direct" ]; then
+    prepared_path="$prepared_direct_file"
+  else
+    prepared_path="$prepared_chain_file"
+  fi
+  cp "$absolute_path" "$prepared_path"
+  printf "%s\n" "$prepared_path"
+  return 0
+}
+
+if [ -z "$DIRECT_UPSTREAM_FILE" ]; then
+  generate_default_direct_file
+fi
+if [ -z "$CHAIN_UPSTREAM_FILE" ]; then
+  generate_default_chain_file
+fi
+
+DIRECT_UPSTREAM_FILE=$(prepare_benchmark_input direct "$DIRECT_UPSTREAM_FILE")
+CHAIN_UPSTREAM_FILE=$(prepare_benchmark_input chain "$CHAIN_UPSTREAM_FILE")
+
 if [ -z "$DIRECT_UPSTREAM_FILE" ] || [ -z "$CHAIN_UPSTREAM_FILE" ]; then
-  generate_default_files
+  echo "benchmark input files are required"
+  exit 1
 fi
 
 container_path_for() {
@@ -135,11 +201,12 @@ wait_for_proxy() {
   local attempt=0
   while [ "$attempt" -lt 20 ]; do
     if curl -sS -o /dev/null --max-time 3 --connect-timeout 2 "http://${PROXY_HOST}:${PROXY_PORT}" >/dev/null 2>&1; then
-      return
+      return 0
     fi
     attempt=$((attempt + 1))
     sleep 1
   done
+  return 1
 }
 
 apply_profile() {
@@ -147,7 +214,10 @@ apply_profile() {
   local container_file
   container_file=$(container_path_for "$host_file")
   UPSTREAM_LIST_FILE="$container_file" docker compose up -d --force-recreate >/dev/null
-  wait_for_proxy
+  if ! wait_for_proxy; then
+    echo "proxy did not become ready after applying profile: $host_file"
+    exit 1
+  fi
 }
 
 parse_ip() {

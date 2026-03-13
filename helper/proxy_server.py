@@ -72,7 +72,9 @@ class ProxyConfig:
             connect_retries=max(1, env_int("UPSTREAM_CONNECT_RETRIES", 3)),
             relay_timeout=env_float("RELAY_TIMEOUT", 120.0),
             loopback_host_mode=os.getenv("REWRITE_LOOPBACK_TO_HOST", "auto").lower(),
-            host_loopback_address=os.getenv("HOST_LOOPBACK_ADDRESS", "host.docker.internal"),
+            host_loopback_address=os.getenv(
+                "HOST_LOOPBACK_ADDRESS", "host.docker.internal"
+            ),
             running_in_docker=is_running_in_docker(),
         )
 
@@ -136,6 +138,10 @@ def resolve_hop_host(config, hop, hop_index):
         if hop.host.lower() in LOOPBACK_HOSTS:
             return config.host_loopback_address
     return hop.host
+
+
+def should_send_absolute_form(request, upstream_entry):
+    return (not request.connect_tunnel) and upstream_entry.last_hop.scheme == "http"
 
 
 def build_router():
@@ -209,7 +215,9 @@ def read_request(rfile):
         if not line:
             break
         if len(line) > MAX_HEADER_LINE:
-            raise ClientError(431, "Request Header Fields Too Large", "Header line is too long.")
+            raise ClientError(
+                431, "Request Header Fields Too Large", "Header line is too long."
+            )
         if line in (b"\r\n", b"\n"):
             break
         try:
@@ -219,7 +227,9 @@ def read_request(rfile):
             raise ClientError(400, "Bad Request", "Malformed header line.") from exc
         headers.append((key.strip(), value.strip()))
     else:
-        raise ClientError(431, "Request Header Fields Too Large", "Too many header lines.")
+        raise ClientError(
+            431, "Request Header Fields Too Large", "Too many header lines."
+        )
 
     host, port, forward_target, connect_tunnel = resolve_target(method, target, headers)
     return ProxyRequest(
@@ -243,7 +253,9 @@ def resolve_target(method, target, headers):
     if parsed.scheme:
         scheme = parsed.scheme.lower()
         if scheme != "http":
-            raise ClientError(400, "Bad Request", "Use CONNECT for non-HTTP upstream requests.")
+            raise ClientError(
+                400, "Bad Request", "Use CONNECT for non-HTTP upstream requests."
+            )
         host = parsed.hostname
         if not host:
             raise ClientError(400, "Bad Request", "Missing target host.")
@@ -341,10 +353,7 @@ def establish_socks5_tunnel(sock, hop, dest_host, dest_port):
         if len(username) > 255 or len(password) > 255:
             raise UpstreamError("SOCKS5 credentials exceed protocol limits")
         payload = (
-            bytes([0x01, len(username)])
-            + username
-            + bytes([len(password)])
-            + password
+            bytes([0x01, len(username)]) + username + bytes([len(password)]) + password
         )
         sock.sendall(payload)
         auth_version, status = recv_exact(sock, 2)
@@ -361,6 +370,7 @@ def establish_socks5_tunnel(sock, hop, dest_host, dest_port):
     discard_socks_reply_address(sock, atyp)
     if reply != 0x00:
         raise UpstreamError(f"SOCKS5 upstream connect failed with code {reply}")
+
 
 def read_http_headers_from_socket(sock):
     buffer = bytearray()
@@ -387,7 +397,9 @@ def establish_http_tunnel(sock, hop, dest_host, dest_port):
     payload = ("\r\n".join(headers) + "\r\n\r\n").encode("iso-8859-1")
     sock.sendall(payload)
 
-    response = read_http_headers_from_socket(sock).decode("iso-8859-1", errors="replace")
+    response = read_http_headers_from_socket(sock).decode(
+        "iso-8859-1", errors="replace"
+    )
     status_line = response.splitlines()[0] if response else ""
     parts = status_line.split(None, 2)
     if len(parts) < 2 or not parts[1].isdigit():
@@ -397,7 +409,9 @@ def establish_http_tunnel(sock, hop, dest_host, dest_port):
         raise UpstreamError(f"HTTP upstream CONNECT failed with status {status_code}")
 
 
-def open_upstream_tunnel(config, upstream_entry, dest_host, dest_port):
+def open_upstream_tunnel(
+    config, upstream_entry, dest_host, dest_port, stop_before_last_hop=False
+):
     last_error = None
     for attempt in range(config.connect_retries):
         sock = None
@@ -406,6 +420,9 @@ def open_upstream_tunnel(config, upstream_entry, dest_host, dest_port):
             sock = open_first_hop_socket(config, first_hop)
 
             for hop_index, hop in enumerate(upstream_entry.hops):
+                is_last_hop = hop_index + 1 == upstream_entry.chain_length
+                if is_last_hop and stop_before_last_hop:
+                    break
                 if hop_index + 1 < upstream_entry.chain_length:
                     next_hop = upstream_entry.hops[hop_index + 1]
                     next_host = next_hop.host
@@ -440,7 +457,9 @@ def open_upstream_tunnel(config, upstream_entry, dest_host, dest_port):
                 config.connect_retries,
                 exc,
             )
-    raise UpstreamError(f"Failed to connect upstream {upstream_entry.key}: {last_error}")
+    raise UpstreamError(
+        f"Failed to connect upstream {upstream_entry.key}: {last_error}"
+    )
 
 
 def relay_bidirectional(left, right, timeout):
@@ -484,7 +503,9 @@ def stream_exact(rfile, upstream_socket, size):
     while remaining > 0:
         chunk = rfile.read(min(BUFFER_SIZE, remaining))
         if not chunk:
-            raise ClientError(400, "Bad Request", "Unexpected EOF while reading request body.")
+            raise ClientError(
+                400, "Bad Request", "Unexpected EOF while reading request body."
+            )
         upstream_socket.sendall(chunk)
         remaining -= len(chunk)
 
@@ -493,7 +514,9 @@ def stream_chunked(rfile, upstream_socket):
     while True:
         line = rfile.readline(MAX_HEADER_LINE + 1)
         if not line:
-            raise ClientError(400, "Bad Request", "Unexpected EOF while reading chunked body.")
+            raise ClientError(
+                400, "Bad Request", "Unexpected EOF while reading chunked body."
+            )
         upstream_socket.sendall(line)
         size_text = line.split(b";", 1)[0].strip()
         try:
@@ -504,7 +527,9 @@ def stream_chunked(rfile, upstream_socket):
             while True:
                 trailer = rfile.readline(MAX_HEADER_LINE + 1)
                 if not trailer:
-                    raise ClientError(400, "Bad Request", "Unexpected EOF after chunk trailer.")
+                    raise ClientError(
+                        400, "Bad Request", "Unexpected EOF after chunk trailer."
+                    )
                 upstream_socket.sendall(trailer)
                 if trailer in (b"\r\n", b"\n"):
                     return
@@ -556,7 +581,9 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             username = self.authenticate(request.headers)
             upstream_entry = self.server.router.route_entry(username)
             if upstream_entry is None:
-                raise ClientError(503, "Service Unavailable", "No upstream port available.")
+                raise ClientError(
+                    503, "Service Unavailable", "No upstream port available."
+                )
 
             if request.connect_tunnel:
                 self.handle_connect(request, username, upstream_entry)
@@ -564,31 +591,53 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
                 self.handle_http_request(request, username, upstream_entry)
         except ClientError as exc:
             self.send_error_response(exc.status_code, exc.reason, exc.body, exc.headers)
-            self.log_request_result(request, username, upstream_entry, f"client_error:{exc.status_code}")
+            self.log_request_result(
+                request, username, upstream_entry, f"client_error:{exc.status_code}"
+            )
         except UpstreamError as exc:
             self.send_error_response(502, "Bad Gateway", str(exc))
-            self.log_request_result(request, username, upstream_entry, f"upstream_error:{exc}")
+            self.log_request_result(
+                request, username, upstream_entry, f"upstream_error:{exc}"
+            )
         except Exception as exc:
             LOGGER.exception("Unhandled proxy error")
-            self.send_error_response(500, "Internal Server Error", "Unhandled proxy error.")
-            self.log_request_result(request, username, upstream_entry, f"internal_error:{exc}")
+            self.send_error_response(
+                500, "Internal Server Error", "Unhandled proxy error."
+            )
+            self.log_request_result(
+                request, username, upstream_entry, f"internal_error:{exc}"
+            )
 
     def authenticate(self, headers):
-        credentials = parse_basic_credentials(header_value(headers, "Proxy-Authorization"))
+        credentials = parse_basic_credentials(
+            header_value(headers, "Proxy-Authorization")
+        )
         if not credentials:
             raise ClientError(
                 407,
                 "Proxy Authentication Required",
                 "Proxy authentication required.",
-                headers=[("Proxy-Authenticate", f'Basic realm="{self.server.config.auth_realm}"')],
+                headers=[
+                    (
+                        "Proxy-Authenticate",
+                        f'Basic realm="{self.server.config.auth_realm}"',
+                    )
+                ],
             )
         username, password = credentials
-        if not username or not check_password(password, self.server.config.auth_password):
+        if not username or not check_password(
+            password, self.server.config.auth_password
+        ):
             raise ClientError(
                 407,
                 "Proxy Authentication Required",
                 "Invalid proxy credentials.",
-                headers=[("Proxy-Authenticate", f'Basic realm="{self.server.config.auth_realm}"')],
+                headers=[
+                    (
+                        "Proxy-Authenticate",
+                        f'Basic realm="{self.server.config.auth_realm}"',
+                    )
+                ],
             )
         return username
 
@@ -600,25 +649,29 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             request.port,
         )
         try:
-            self.wfile.write(b"HTTP/1.1 200 Connection established\r\nConnection: close\r\n\r\n")
+            self.wfile.write(
+                b"HTTP/1.1 200 Connection established\r\nConnection: close\r\n\r\n"
+            )
             self.wfile.flush()
             self.connection.settimeout(None)
-            relay_bidirectional(self.connection, upstream_socket, self.server.config.relay_timeout)
+            relay_bidirectional(
+                self.connection, upstream_socket, self.server.config.relay_timeout
+            )
             self.log_request_result(request, username, upstream_entry, "ok_tunnel")
         finally:
             upstream_socket.close()
 
     def handle_http_request(self, request, username, upstream_entry):
         headers = replace_header(filter_headers(request.headers), "Connection", "close")
-        first_hop = upstream_entry.first_hop
-        if upstream_entry.chain_length == 1 and first_hop.scheme == "http":
-            if first_hop.username or first_hop.password:
+        final_hop = upstream_entry.last_hop
+        if should_send_absolute_form(request, upstream_entry):
+            if final_hop.username or final_hop.password:
                 headers = replace_header(
                     headers,
                     "Proxy-Authorization",
                     build_basic_authorization(
-                        first_hop.username,
-                        first_hop.password,
+                        final_hop.username,
+                        final_hop.password,
                     ),
                 )
             request_bytes = format_request(
@@ -627,7 +680,16 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
                 request.version,
                 headers,
             )
-            upstream_socket = open_first_hop_socket(self.server.config, first_hop)
+            if upstream_entry.chain_length == 1:
+                upstream_socket = open_first_hop_socket(self.server.config, final_hop)
+            else:
+                upstream_socket = open_upstream_tunnel(
+                    self.server.config,
+                    upstream_entry,
+                    request.host,
+                    request.port,
+                    stop_before_last_hop=True,
+                )
         else:
             request_bytes = format_request(
                 request.method,
@@ -704,7 +766,9 @@ def main():
     )
     config = ProxyConfig.from_env()
     router = build_router()
-    server = ThreadedTCPServer((config.listen_host, config.listen_port), ProxyRequestHandler, config, router)
+    server = ThreadedTCPServer(
+        (config.listen_host, config.listen_port), ProxyRequestHandler, config, router
+    )
     LOGGER.info(
         "Listening on %s:%s with upstream_source=%s upstream_count=%s",
         config.listen_host,
