@@ -1,12 +1,13 @@
 # ProxyPool
 
-Sticky upstream proxy router built on Squid with switchable routing modes.
+Sticky upstream proxy router with switchable routing modes.
 
 ## Overview
-- Entry proxy: Squid (Docker)
-- Routing decision: Squid external ACL -> Python helper
+- Entry proxy: Python HTTP proxy (Docker)
+- Client auth + routing decision: Python helper
 - State (exclusive/shared_capped): Redis
 - Upstream proxies: same host, port range (default 10001-10100), shared credentials
+- Supported upstream schemes: `http`, `socks5`, `socks5h`
 
 ## Features
 - shared: any username is accepted; same username always maps to the same upstream port
@@ -20,7 +21,7 @@ Sticky upstream proxy router built on Squid with switchable routing modes.
    - `docker compose up --build`
 
 ## Usage
-Set client proxy to Squid (password is required):
+Set client proxy to the local entry proxy (password is required):
 - `HTTP_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
 - `HTTPS_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
 
@@ -31,6 +32,7 @@ Set client proxy to Squid (password is required):
 
 ## Configuration
 Edit `.env` for your setup:
+- `UPSTREAM_SCHEME` = http | socks5 | socks5h
 - `UPSTREAM_HOST`, `UP_USER`, `UP_PASS`
 - `AUTH_PASSWORD` (fixed password for all users)
 - `PORT_FIRST`, `PORT_LAST`
@@ -43,3 +45,4 @@ Edit `.env` for your setup:
 
 ## Notes
 - `.env` contains credentials and should stay local.
+- In `.env`, write the actual password characters directly. If your shell command used `\~`, that usually means the real password character is `~`.

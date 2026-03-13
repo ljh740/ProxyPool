@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   squid:
     build:
@@ -8,6 +6,7 @@ services:
     ports:
       - "3128:3128"
     environment:
+      UPSTREAM_SCHEME: ${UPSTREAM_SCHEME:-http}
       UPSTREAM_HOST: ${UPSTREAM_HOST:-proxy.example.com}
       UP_USER: ${UP_USER:-foo}
       UP_PASS: ${UP_PASS:-bar}

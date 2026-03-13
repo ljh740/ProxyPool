@@ -109,10 +109,8 @@ show_diagnostics() {
   if [ -n "${CURL_LOG:-}" ] && [ -f "$CURL_LOG" ]; then
     tail -n 80 "$CURL_LOG" || true
   fi
-  echo "---- squid cache.log ----"
-  docker compose exec -T squid sh -c 'tail -n 80 /var/log/squid/cache.log' || true
-  echo "---- squid access.log ----"
-  docker compose exec -T squid sh -c 'tail -n 80 /var/log/squid/access.log' || true
+  echo "---- proxy service logs ----"
+  docker compose logs --tail 80 squid || true
 }
 
 while IFS= read -r user; do
