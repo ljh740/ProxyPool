@@ -30,6 +30,8 @@ Set client proxy to the local entry proxy (password is required):
 - Logic-only: `./scripts/verify.sh`
 - Real request via ipinfo: `./scripts/verify_real.sh`
   - Uses `https://ipinfo.io/json` to check sticky behavior and IP distribution
+- Latency benchmark: `./scripts/benchmark_chain_latency.sh`
+  - Compares single-hop vs chained proxy latency and can save rerun artifacts with `RESULT_DIR=...`
 
 ## Configuration
 Edit `.env` for your setup:
