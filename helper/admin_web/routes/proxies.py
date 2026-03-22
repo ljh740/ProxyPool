@@ -1,9 +1,14 @@
 """Proxy-management routes for the admin Flask app."""
 
+import json
 import math
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
 from urllib.parse import quote as _url_quote
 
-from flask import render_template, request
+from flask import Response, render_template, request
 
 from i18n import get_translations, t
 from persistence import load_batch_params, save_batch_params
@@ -12,11 +17,49 @@ from upstream_pool import (
     UpstreamEntry,
     UpstreamHop,
     compute_entry_key,
+    parse_upstream_line,
     parse_upstream_hop,
 )
 
 from .. import resources as admin_resources
 from ..app_runtime import build_redirect_location
+
+IMPORT_CHECK_TARGET_HOST = "example.com"
+IMPORT_CHECK_TARGET_PORT = 443
+IMPORT_CHECK_TIMEOUT_CAP = 8.0
+IMPORT_CHECK_JOB_TTL_SECONDS = 1800
+IMPORT_CHECK_POLL_INTERVAL_MS = 750
+_IMPORT_CHECK_JOBS = {}
+_IMPORT_CHECK_JOBS_LOCK = threading.RLock()
+
+
+@dataclass
+class _ImportCheckJob:
+    job_id: str
+    locale: str
+    parsed_entries: list
+    status: str = "pending"
+    results: list = field(default_factory=list)
+    successful_entries: list = field(default_factory=list)
+    completed: int = 0
+    created_at: float = field(default_factory=time.time)
+    error: str = ""
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def snapshot(self):
+        with self.lock:
+            success_count = len(self.successful_entries)
+            return {
+                "job_id": self.job_id,
+                "status": self.status,
+                "total": len(self.results),
+                "completed": self.completed,
+                "success_count": success_count,
+                "failure_count": self.completed - success_count,
+                "error": self.error,
+                "results": [dict(item) for item in self.results],
+                "poll_interval_ms": IMPORT_CHECK_POLL_INTERVAL_MS,
+            }
 
 
 def _format_hop_uri(hop):
@@ -30,6 +73,18 @@ def _prepend_hop_value(hops):
     if len(hops) <= 1:
         return ""
     return ", ".join(_format_hop_uri(hop) for hop in hops[:-1])
+
+
+def _format_chain_uri(hops):
+    return " | ".join(_format_hop_uri(hop) for hop in hops)
+
+
+def _build_proxy_summary(entry):
+    return {
+        "entry_key": entry.key,
+        "chain_uri": _format_chain_uri(entry.hops),
+        "hop_count": len(entry.hops),
+    }
 
 
 def _build_proxy_list_state(locale, entries, source_filter, page_value, proxies_per_page):
@@ -114,6 +169,7 @@ def _build_proxy_form_context(
     password,
     prepend_hop,
     in_random_pool,
+    proxy_summary=None,
     error="",
 ):
     return {
@@ -128,6 +184,7 @@ def _build_proxy_form_context(
         "password": password,
         "prepend_hop": prepend_hop,
         "in_random_pool": in_random_pool,
+        "proxy_summary": proxy_summary,
         "error": error,
         "i": get_translations(locale),
     }
@@ -147,6 +204,7 @@ def _render_proxy_form_page(
     password,
     prepend_hop,
     in_random_pool,
+    proxy_summary=None,
     error="",
 ):
     content = render_template(
@@ -163,6 +221,7 @@ def _render_proxy_form_page(
             password=password,
             prepend_hop=prepend_hop,
             in_random_pool=in_random_pool,
+            proxy_summary=proxy_summary,
             error=error,
         ),
     )
@@ -171,6 +230,7 @@ def _render_proxy_form_page(
         content=content,
         active_nav="nav_proxies",
         ui=ui,
+        extra_scripts=admin_resources.load_template_source("proxies/form_scripts.js"),
     )
 
 
@@ -197,8 +257,230 @@ def _render_batch_form_page(runtime, ui, *, form_data, error=""):
     )
 
 
+def _render_import_form_page(runtime, ui, *, form_data, error=""):
+    content = render_template(
+        "proxies/import_form.html",
+        schemes=sorted(SUPPORTED_UPSTREAM_SCHEMES),
+        default_scheme=form_data.get("default_scheme", "http"),
+        default_username=form_data.get("default_username", ""),
+        default_password=form_data.get("default_password", ""),
+        proxy_list_text=form_data.get("proxy_list_text", ""),
+        probe_before_import=form_data.get("probe_before_import", False),
+        error=error,
+        i=get_translations(ui.locale),
+    )
+    return runtime.build_page_response(
+        title=t("import_title", ui.locale),
+        content=content,
+        active_nav="nav_proxies",
+        ui=ui,
+        extra_scripts=admin_resources.load_template_source("proxies/import_scripts.js"),
+    )
+
+
+def _replace_auto_entries(existing_entries, new_entries):
+    merged = [entry for entry in existing_entries if entry.source_tag != "auto"]
+    existing_keys = {entry.key for entry in merged}
+    imported_count = 0
+    for entry in new_entries:
+        normalized = UpstreamEntry(
+            key=entry.key,
+            label=entry.label,
+            hops=entry.hops,
+            source_tag="auto",
+            in_random_pool=True,
+        )
+        if normalized.key in existing_keys:
+            continue
+        merged.append(normalized)
+        existing_keys.add(normalized.key)
+        imported_count += 1
+    return merged, imported_count
+
+
+def _append_manual_entries(existing_entries, new_entries):
+    merged = list(existing_entries)
+    existing_keys = {entry.key for entry in merged}
+    imported_count = 0
+    for entry in new_entries:
+        normalized = UpstreamEntry(
+            key=entry.key,
+            label=entry.label,
+            hops=entry.hops,
+            source_tag="manual",
+            in_random_pool=True,
+        )
+        if normalized.key in existing_keys:
+            continue
+        merged.append(normalized)
+        existing_keys.add(normalized.key)
+        imported_count += 1
+    return merged, imported_count
+
+
+def _is_ajax_request():
+    return request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+
+def _json_response(payload, status=200):
+    return Response(
+        json.dumps(payload),
+        status=status,
+        mimetype="application/json",
+    )
+
+
+def _build_import_form_data():
+    return {
+        "default_scheme": request.form.get("default_scheme", "http").strip().lower(),
+        "default_username": request.form.get("default_username", ""),
+        "default_password": request.form.get("default_password", ""),
+        "proxy_list_text": request.form.get("proxy_list_text", ""),
+        "probe_before_import": request.form.get("probe_before_import", "0") == "1",
+    }
+
+
+def _parse_import_entries(form_data, locale):
+    default_scheme = form_data["default_scheme"] or "http"
+    if default_scheme not in SUPPORTED_UPSTREAM_SCHEMES:
+        raise ValueError(t("import_unsupported_scheme", locale, scheme=default_scheme))
+
+    parsed_entries = []
+    lines = form_data["proxy_list_text"].splitlines()
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            entry = parse_upstream_line(
+                line,
+                line_number - 1,
+                default_scheme,
+                form_data["default_username"],
+                form_data["default_password"],
+            )
+        except ValueError as exc:
+            raise ValueError(
+                t(
+                    "import_line_error",
+                    locale,
+                    line=line_number,
+                    error=str(exc),
+                )
+            ) from exc
+        if entry is not None:
+            parsed_entries.append((line_number, entry))
+
+    if not parsed_entries:
+        raise ValueError(t("import_no_entries", locale))
+    return parsed_entries
+
+
+def _build_probe_config(app_config):
+    from proxy_server import ProxyConfig
+
+    config = ProxyConfig.from_app_config(app_config, strict=False)
+    config.connect_timeout = min(config.connect_timeout, IMPORT_CHECK_TIMEOUT_CAP)
+    config.connect_retries = 1
+    return config
+
+
+def _probe_import_entry(config, entry):
+    from proxy_server import open_upstream_tunnel
+
+    sock = None
+    try:
+        sock = open_upstream_tunnel(
+            config,
+            entry,
+            IMPORT_CHECK_TARGET_HOST,
+            IMPORT_CHECK_TARGET_PORT,
+        )
+        return True, ""
+    except Exception as exc:  # pragma: no cover - message path asserted in higher-level tests
+        return False, str(exc)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _prune_import_check_jobs():
+    cutoff = time.time() - IMPORT_CHECK_JOB_TTL_SECONDS
+    with _IMPORT_CHECK_JOBS_LOCK:
+        stale_ids = [
+            job_id
+            for job_id, job in _IMPORT_CHECK_JOBS.items()
+            if job.created_at < cutoff
+        ]
+        for job_id in stale_ids:
+            _IMPORT_CHECK_JOBS.pop(job_id, None)
+
+
+def _get_import_check_job(job_id):
+    _prune_import_check_jobs()
+    with _IMPORT_CHECK_JOBS_LOCK:
+        return _IMPORT_CHECK_JOBS.get(job_id)
+
+
+def _run_import_check_job(runtime, job):
+    try:
+        config = _build_probe_config(runtime.load_app_config())
+        with job.lock:
+            job.status = "running"
+        for index, (_line_number, entry) in enumerate(job.parsed_entries):
+            started_at = time.monotonic()
+            ok, error_message = _probe_import_entry(config, entry)
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            with job.lock:
+                job.completed += 1
+                job.results[index]["status"] = "ok" if ok else "error"
+                job.results[index]["message"] = (
+                    t("import_check_ok", job.locale)
+                    if ok
+                    else t("import_check_failed", job.locale, error=error_message)
+                )
+                job.results[index]["duration_ms"] = duration_ms
+                if ok:
+                    job.successful_entries.append(entry)
+        with job.lock:
+            job.status = "completed"
+    except Exception as exc:  # pragma: no cover - guarded by integration tests
+        with job.lock:
+            job.status = "failed"
+            job.error = str(exc)
+
+
+def _create_import_check_job(runtime, locale, parsed_entries):
+    _prune_import_check_jobs()
+    job = _ImportCheckJob(
+        job_id=uuid.uuid4().hex,
+        locale=locale,
+        parsed_entries=list(parsed_entries),
+        results=[
+            {
+                "line": line_number,
+                "key": entry.key,
+                "display": entry.display,
+                "status": "pending",
+                "message": "",
+                "duration_ms": None,
+            }
+            for line_number, entry in parsed_entries
+        ],
+    )
+    with _IMPORT_CHECK_JOBS_LOCK:
+        _IMPORT_CHECK_JOBS[job.job_id] = job
+    thread = threading.Thread(
+        target=_run_import_check_job,
+        args=(runtime, job),
+        daemon=True,
+    )
+    thread.start()
+    return job
+
+
 def register_proxy_routes(blueprint, runtime):
-    """Register proxy CRUD and batch routes."""
+    """Register proxy CRUD, import, and batch routes."""
 
     @blueprint.get("/dashboard/proxies")
     def proxy_list():
@@ -243,6 +525,25 @@ def register_proxy_routes(blueprint, runtime):
             password="",
             prepend_hop="",
             in_random_pool=True,
+        )
+
+    @blueprint.get("/dashboard/proxies/import")
+    def proxy_import_form():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return guard
+
+        ui = runtime.resolve_ui_state()
+        return _render_import_form_page(
+            runtime,
+            ui,
+            form_data={
+                "default_scheme": "http",
+                "default_username": "",
+                "default_password": "",
+                "proxy_list_text": "",
+                "probe_before_import": False,
+            },
         )
 
     @blueprint.post("/dashboard/proxies/add")
@@ -362,6 +663,7 @@ def register_proxy_routes(blueprint, runtime):
             password=hop.password,
             prepend_hop=_prepend_hop_value(entry.hops),
             in_random_pool=entry.in_random_pool,
+            proxy_summary=_build_proxy_summary(entry),
         )
 
     @blueprint.post("/dashboard/proxies/<key>/edit")
@@ -371,6 +673,18 @@ def register_proxy_routes(blueprint, runtime):
             return guard
 
         ui = runtime.resolve_ui_state()
+        storage = runtime.get_storage()
+        entries = list(runtime.load_entries(storage))
+        current_entry = next((entry for entry in entries if entry.key == key), None)
+        if current_entry is None:
+            return runtime.redirect(
+                build_redirect_location(
+                    "/dashboard/proxies",
+                    error=t("proxies_not_found", ui.locale),
+                ),
+                ui=ui,
+            )
+
         scheme = request.form.get("scheme", "http")
         host = request.form.get("host", "").strip()
         port_str = request.form.get("port", "").strip()
@@ -393,6 +707,7 @@ def register_proxy_routes(blueprint, runtime):
                 password=password,
                 prepend_hop=prepend_hop_raw,
                 in_random_pool=in_pool,
+                proxy_summary=_build_proxy_summary(current_entry),
                 error=error_msg,
             )
 
@@ -427,8 +742,6 @@ def register_proxy_routes(blueprint, runtime):
         new_key = compute_entry_key(hops)
         label = " -> ".join("%s:%s" % (hop.host, hop.port) for hop in hops)
 
-        storage = runtime.get_storage()
-        entries = list(runtime.load_entries(storage))
         if any(entry.key == new_key and entry.key != key for entry in entries):
             return _render_error(t("proxy_form_duplicate", ui.locale))
 
@@ -471,6 +784,126 @@ def register_proxy_routes(blueprint, runtime):
         storage = runtime.get_storage()
         params = load_batch_params(storage)
         return _render_batch_form_page(runtime, ui, form_data=params)
+
+    @blueprint.post("/dashboard/proxies/import")
+    def proxy_import_submit():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return guard
+
+        ui = runtime.resolve_ui_state()
+        form_data = _build_import_form_data()
+
+        def _render_error(error_msg):
+            return _render_import_form_page(
+                runtime,
+                ui,
+                form_data=form_data,
+                error=error_msg,
+            )
+
+        try:
+            parsed_entries = _parse_import_entries(form_data, ui.locale)
+        except ValueError as exc:
+            return _render_error(str(exc))
+
+        storage = runtime.get_storage()
+        existing = list(runtime.load_entries(storage))
+        merged, imported_count = _append_manual_entries(
+            existing,
+            [entry for _line_number, entry in parsed_entries],
+        )
+        if imported_count == 0:
+            return _render_error(t("import_no_new_entries", ui.locale))
+        runtime.save_entries(merged, storage)
+        runtime.trigger_reload()
+        return runtime.redirect(
+            build_redirect_location(
+                "/dashboard/proxies",
+                msg=t("import_completed", ui.locale, count=imported_count),
+            ),
+            ui=ui,
+        )
+
+    @blueprint.post("/dashboard/proxies/import/check")
+    def proxy_import_check_start():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        ui = runtime.resolve_ui_state()
+        form_data = _build_import_form_data()
+        try:
+            parsed_entries = _parse_import_entries(form_data, ui.locale)
+        except ValueError as exc:
+            return _json_response({"ok": False, "error": str(exc)}, status=400)
+
+        job = _create_import_check_job(runtime, ui.locale, parsed_entries)
+        return _json_response({"ok": True, "job": job.snapshot()})
+
+    @blueprint.get("/dashboard/proxies/import/check/<job_id>")
+    def proxy_import_check_status(job_id):
+        guard = runtime.require_admin()
+        if guard is not None:
+            return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        job = _get_import_check_job(job_id)
+        if job is None:
+            return _json_response(
+                {"ok": False, "error": t("import_check_not_found", runtime.resolve_ui_state().locale)},
+                status=404,
+            )
+        return _json_response({"ok": True, "job": job.snapshot()})
+
+    @blueprint.post("/dashboard/proxies/import/commit")
+    def proxy_import_commit():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        ui = runtime.resolve_ui_state()
+        job_id = request.form.get("job_id", "").strip()
+        if not job_id:
+            return _json_response(
+                {"ok": False, "error": t("import_check_not_found", ui.locale)},
+                status=400,
+            )
+        job = _get_import_check_job(job_id)
+        if job is None:
+            return _json_response(
+                {"ok": False, "error": t("import_check_not_found", ui.locale)},
+                status=404,
+            )
+
+        snapshot = job.snapshot()
+        if snapshot["status"] not in {"completed", "failed"}:
+            return _json_response(
+                {"ok": False, "error": t("import_check_still_running", ui.locale)},
+                status=409,
+            )
+
+        storage = runtime.get_storage()
+        existing = list(runtime.load_entries(storage))
+        merged, imported_count = _append_manual_entries(existing, job.successful_entries)
+        if imported_count == 0:
+            return _json_response(
+                {"ok": False, "error": t("import_no_new_entries", ui.locale)},
+                status=400,
+            )
+        runtime.save_entries(merged, storage)
+        runtime.trigger_reload()
+        with _IMPORT_CHECK_JOBS_LOCK:
+            _IMPORT_CHECK_JOBS.pop(job_id, None)
+        return _json_response(
+            {
+                "ok": True,
+                "message": t("import_completed", ui.locale, count=imported_count),
+                "redirect_url": build_redirect_location(
+                    "/dashboard/proxies",
+                    msg=t("import_completed", ui.locale, count=imported_count),
+                ),
+            }
+        )
 
     @blueprint.post("/dashboard/proxies/<key>/delete")
     def proxy_delete(key):
@@ -522,6 +955,11 @@ def register_proxy_routes(blueprint, runtime):
                 break
 
         if not found:
+            if _is_ajax_request():
+                return _json_response(
+                    {"ok": False, "error": t("proxies_not_found", ui.locale)},
+                    status=404,
+                )
             return runtime.redirect(
                 build_redirect_location(
                     "/dashboard/proxies",
@@ -532,6 +970,22 @@ def register_proxy_routes(blueprint, runtime):
 
         runtime.save_entries(entries, storage)
         runtime.trigger_reload()
+        if _is_ajax_request():
+            updated_entry = next(entry for entry in entries if entry.key == key)
+            state_label = t(
+                "proxies_pool_on_short" if updated_entry.in_random_pool else "proxies_pool_off_short",
+                ui.locale,
+            )
+            return _json_response(
+                {
+                    "ok": True,
+                    "message": t("proxies_pool_updated", ui.locale, state=state_label),
+                    "entry": {
+                        "key": updated_entry.key,
+                        "in_random_pool": updated_entry.in_random_pool,
+                    },
+                }
+            )
         return runtime.redirect(build_redirect_location("/dashboard/proxies"), ui=ui)
 
     @blueprint.post("/dashboard/proxies/batch/delete")
@@ -698,12 +1152,7 @@ def register_proxy_routes(blueprint, runtime):
             )
 
         existing = list(runtime.load_entries(storage))
-        merged = [entry for entry in existing if entry.source_tag != "auto"]
-        existing_keys = {entry.key for entry in merged}
-        for entry in new_entries:
-            if entry.key not in existing_keys:
-                merged.append(entry)
-                existing_keys.add(entry.key)
+        merged, _ = _replace_auto_entries(existing, new_entries)
 
         runtime.save_entries(merged, storage)
         runtime.trigger_reload()

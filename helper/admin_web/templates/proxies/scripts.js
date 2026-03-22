@@ -89,5 +89,51 @@
     container.appendChild(stateInput);
     form.submit();
   };
+
+  function applyPoolButtonState(button, isOn) {
+    if (!button) return;
+    button.dataset.state = isOn ? 'on' : 'off';
+    button.textContent = isOn ? button.dataset.onLabel : button.dataset.offLabel;
+    button.style.border = 'none';
+    button.style.fontWeight = '600';
+    button.style.fontSize = '0.75rem';
+    if (isOn) {
+      button.style.background = 'var(--pp-success-subtle)';
+      button.style.color = 'var(--pp-success)';
+    } else {
+      button.style.background = 'var(--pp-surface-hover)';
+      button.style.color = 'var(--pp-text-muted)';
+    }
+  }
+
+  async function togglePoolAsync(form, button) {
+    var response = await fetch(form.action, {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: new URLSearchParams(new FormData(form))
+    });
+    var payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || '');
+    }
+    applyPoolButtonState(button, !!(payload.entry && payload.entry.in_random_pool));
+    if (payload.message) showToast(payload.message, 'success');
+  }
+
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    if (!form.classList || !form.classList.contains('pp-toggle-pool-form')) return;
+    if (!window.fetch) return;
+    e.preventDefault();
+    var button = form.querySelector('.pp-pool-toggle-btn');
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    togglePoolAsync(form, button).catch(function(error) {
+      var fallback = document.getElementById('i18n-pool-toggle-error');
+      showToast((error && error.message) || (fallback ? fallback.textContent : 'Request failed'), 'error', 6000);
+    }).finally(function() {
+      button.disabled = false;
+    });
+  });
 })();
 </script>

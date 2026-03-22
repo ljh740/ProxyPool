@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,7 @@ upstream_pool = importlib.import_module("upstream_pool")
 proxy_server = importlib.import_module("proxy_server")
 persistence = importlib.import_module("persistence")
 web_admin = importlib.import_module("web_admin")
+proxy_routes = importlib.import_module("admin_web.routes.proxies")
 
 AppConfig = config_center.AppConfig
 UpstreamEntry = upstream_pool.UpstreamEntry
@@ -229,10 +231,7 @@ class TestE2E(unittest.TestCase):
     def _post_with_csrf(self, submit_path, *, data=None, form_path=None, allow_redirects=False):
         """Fetch a CSRF token from the form page, then submit the POST request."""
         resolved_form_path = form_path or self._resolve_form_path(submit_path)
-        form_resp = self.session.get(self.base_url + resolved_form_path)
-        self.assertEqual(form_resp.status_code, 200)
-        csrf_token = _extract_csrf_token(form_resp)
-        self.assertIsNotNone(csrf_token, "expected CSRF token on %s" % resolved_form_path)
+        csrf_token = self._csrf_token_for(resolved_form_path)
         payload = dict(data or {})
         payload["csrf_token"] = csrf_token
         return self.session.post(
@@ -241,12 +240,20 @@ class TestE2E(unittest.TestCase):
             allow_redirects=allow_redirects,
         )
 
+    def _csrf_token_for(self, form_path):
+        form_resp = self.session.get(self.base_url + form_path)
+        self.assertEqual(form_resp.status_code, 200)
+        csrf_token = _extract_csrf_token(form_resp)
+        self.assertIsNotNone(csrf_token, "expected CSRF token on %s" % form_path)
+        return csrf_token
+
     def _resolve_form_path(self, submit_path):
         """Map POST-only endpoints back to the GET page that renders the form."""
         explicit_paths = {
             "/dashboard/config/save": "/dashboard/config",
             "/dashboard/compat/save": "/dashboard/compat",
             "/dashboard/logs/clear": "/dashboard/logs",
+            "/dashboard/proxies/import": "/dashboard/proxies/import",
             "/dashboard/proxies/batch/generate": "/dashboard/proxies/batch",
             "/dashboard/proxies/batch/clear": "/dashboard/proxies",
             "/dashboard/proxies/batch/delete": "/dashboard/proxies",
@@ -727,6 +734,36 @@ class TestE2E(unittest.TestCase):
         # Should re-render form with error message about port
         self.assertIn("bad-proxy.example.com", resp.text)
 
+    def test_edit_proxy_page_shows_copyable_chain_uri(self):
+        self._login()
+        self._reset_storage()
+        hops = (
+            UpstreamHop("socks5", "gate.old", 1080, "", ""),
+            UpstreamHop("http", "edit.example.com", 10001, "u", "p"),
+        )
+        entry = UpstreamEntry(
+            key=compute_entry_key(hops),
+            label="gate.old:1080 -> edit.example.com:10001",
+            hops=hops,
+            source_tag="manual",
+            in_random_pool=True,
+        )
+        persistence.save_proxy_list(self._storage, [entry])
+
+        resp = self.session.get(self.base_url + f"/dashboard/proxies/{entry.key}/edit")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('data-proxy-summary-card', resp.text)
+        self.assertIn('id="proxy-entry-key"', resp.text)
+        self.assertIn('id="copy-entry-key-btn"', resp.text)
+        self.assertIn(entry.key, resp.text)
+        self.assertIn('id="proxy-chain-uri"', resp.text)
+        self.assertIn('id="copy-chain-uri-btn"', resp.text)
+        self.assertIn(
+            "socks5://gate.old:1080 | http://u:p@edit.example.com:10001",
+            resp.text,
+        )
+
     def test_edit_proxy(self):
         self._login()
         self._reset_storage()
@@ -823,6 +860,163 @@ class TestE2E(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         entries = persistence.load_proxy_list(self._storage)
         self.assertFalse(any(e.key == "del_me" for e in entries))
+
+    def test_import_proxy_form_renders(self):
+        self._login()
+        resp = self.session.get(self.base_url + "/dashboard/proxies/import")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("proxy_list_text", resp.text)
+
+    def test_import_proxy_list_adds_manual_entries(self):
+        self._login()
+        self._reset_storage()
+        manual = _make_entry("manual_keep", "manual-keep.example.com", 10001, source_tag="manual")
+        auto = _make_entry("auto_keep", "auto-keep.example.com", 10002, source_tag="auto")
+        persistence.save_proxy_list(self._storage, [manual, auto])
+
+        resp = self._post_with_csrf(
+            "/dashboard/proxies/import",
+            form_path="/dashboard/proxies/import",
+            data={
+                "default_scheme": "socks5",
+                "default_username": "fallback-user",
+                "default_password": "fallback-pass",
+                "proxy_list_text": "\n".join(
+                    [
+                        "# comment",
+                        "import-one.example.com:20001",
+                        "http://127.0.0.1:30001 | import-two.example.com:20002",
+                    ]
+                ),
+            },
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/dashboard/proxies", resp.headers["Location"])
+
+        entries = persistence.load_proxy_list(self._storage)
+        self.assertEqual(len(entries), 4)
+        imported = [
+            entry
+            for entry in entries
+            if entry.last_hop.host in {"import-one.example.com", "import-two.example.com"}
+        ]
+        self.assertEqual(len(imported), 2)
+        self.assertTrue(all(entry.source_tag == "manual" for entry in imported))
+        self.assertTrue(all(entry.in_random_pool for entry in imported))
+        first = next(entry for entry in imported if entry.last_hop.host == "import-one.example.com")
+        self.assertEqual(first.last_hop.scheme, "socks5")
+        self.assertEqual(first.last_hop.username, "fallback-user")
+        self.assertEqual(first.last_hop.password, "fallback-pass")
+        second = next(entry for entry in imported if entry.last_hop.host == "import-two.example.com")
+        self.assertEqual(second.chain_length, 2)
+        self.assertEqual(second.hops[0].scheme, "http")
+        self.assertEqual(second.last_hop.username, "fallback-user")
+        self.assertTrue(any(entry.key == manual.key for entry in entries))
+        self.assertTrue(any(entry.key == auto.key for entry in entries))
+
+    def test_import_proxy_list_rejects_invalid_line(self):
+        self._login()
+        self._reset_storage()
+        resp = self._post_with_csrf(
+            "/dashboard/proxies/import",
+            form_path="/dashboard/proxies/import",
+            data={
+                "default_scheme": "http",
+                "default_username": "",
+                "default_password": "",
+                "proxy_list_text": "not-a-valid-proxy-line",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Line 1", resp.text)
+        self.assertIn("Expected host:port", resp.text)
+
+    def test_import_proxy_list_check_then_commit_saves_only_valid_entries(self):
+        self._login()
+        self._reset_storage()
+        auto = _make_entry("auto_keep", "auto-keep.example.com", 10002, source_tag="auto")
+        persistence.save_proxy_list(self._storage, [auto])
+        csrf_token = self._csrf_token_for("/dashboard/proxies/import")
+
+        with patch.object(
+            proxy_routes,
+            "_probe_import_entry",
+            side_effect=[(True, ""), (False, "dial timeout")],
+        ):
+            start_resp = self.session.post(
+                self.base_url + "/dashboard/proxies/import/check",
+                headers={"X-Requested-With": "XMLHttpRequest"},
+                data={
+                    "csrf_token": csrf_token,
+                    "default_scheme": "socks5",
+                    "default_username": "fallback-user",
+                    "default_password": "fallback-pass",
+                    "proxy_list_text": "\n".join(
+                        [
+                            "check-ok.example.com:21001",
+                            "check-bad.example.com:21002",
+                        ]
+                    ),
+                },
+            )
+            self.assertEqual(start_resp.status_code, 200)
+            start_payload = start_resp.json()
+            self.assertTrue(start_payload["ok"])
+            job_id = start_payload["job"]["job_id"]
+
+            status_payload = None
+            for _ in range(40):
+                status_resp = self.session.get(
+                    self.base_url + f"/dashboard/proxies/import/check/{job_id}",
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                )
+                self.assertEqual(status_resp.status_code, 200)
+                status_payload = status_resp.json()
+                if status_payload["job"]["status"] == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertIsNotNone(status_payload)
+        self.assertEqual(status_payload["job"]["status"], "completed")
+        self.assertEqual(status_payload["job"]["success_count"], 1)
+        self.assertEqual(status_payload["job"]["failure_count"], 1)
+
+        commit_resp = self.session.post(
+            self.base_url + "/dashboard/proxies/import/commit",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            data={
+                "csrf_token": csrf_token,
+                "job_id": job_id,
+            },
+        )
+        self.assertEqual(commit_resp.status_code, 200)
+        commit_payload = commit_resp.json()
+        self.assertTrue(commit_payload["ok"])
+        entries = persistence.load_proxy_list(self._storage)
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(any(entry.last_hop.host == "check-ok.example.com" for entry in entries))
+        self.assertFalse(any(entry.last_hop.host == "check-bad.example.com" for entry in entries))
+        self.assertTrue(any(entry.key == auto.key for entry in entries))
+
+    def test_ajax_toggle_pool_returns_json_without_redirect(self):
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("ajax_toggle", "ajax-toggle.example.com", 10001, source_tag="manual")
+        persistence.save_proxy_list(self._storage, [entry])
+        csrf_token = self._csrf_token_for("/dashboard/proxies")
+
+        resp = self.session.post(
+            self.base_url + f"/dashboard/proxies/{entry.key}/toggle-pool",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            data={"csrf_token": csrf_token},
+            allow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["entry"]["in_random_pool"])
+        saved_entry = persistence.load_proxy_list(self._storage)[0]
+        self.assertFalse(saved_entry.in_random_pool)
 
     # ====================================================================
     # Tier 5: Batch

@@ -8,6 +8,66 @@
         {% if error %}
         <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
         {% endif %}
+        {% if proxy_summary %}
+        <section class="pp-proxy-access-card" data-proxy-summary-card>
+          <div class="pp-proxy-access-header">
+            <div class="pp-proxy-access-headline">
+              <div class="pp-proxy-access-icon">
+                <i class="ti ti-route-2"></i>
+              </div>
+              <div>
+                <div class="pp-proxy-access-title">{{ i.proxy_form_summary_title }}</div>
+                <p class="pp-proxy-access-subtitle">{{ i.proxy_form_summary_subtitle }}</p>
+              </div>
+            </div>
+            <span class="pp-badge pp-badge-info">
+              <i class="ti ti-git-merge"></i>{{ proxy_summary.hop_count }}
+            </span>
+          </div>
+          <div class="pp-proxy-access-grid">
+            <div class="pp-proxy-access-field">
+              <div class="pp-proxy-access-field-top">
+                <label class="pp-proxy-access-field-label" for="proxy-entry-key">{{ i.proxy_form_entry_key }}</label>
+                <button type="button"
+                        class="btn btn-sm pp-copy-btn"
+                        id="copy-entry-key-btn"
+                        data-copy-target="proxy-entry-key"
+                        data-copy-state="idle"
+                        data-default-label="{{ i.proxy_form_copy_key_btn }}"
+                        data-copied-label="{{ i.proxy_form_copied }}"
+                        data-success-message="{{ i.proxy_form_entry_key_copied }}"
+                        data-error-message="{{ i.proxy_form_copy_failed }}">
+                  <i class="ti ti-key"></i>
+                  <span class="pp-copy-btn-label">{{ i.proxy_form_copy_key_btn }}</span>
+                </button>
+              </div>
+              <input type="text" class="form-control font-monospace" id="proxy-entry-key"
+                     value="{{ proxy_summary.entry_key }}" readonly spellcheck="false">
+              <span class="form-hint">{{ i.proxy_form_entry_key_hint }}</span>
+            </div>
+            <div class="pp-proxy-access-field">
+              <div class="pp-proxy-access-field-top">
+                <label class="pp-proxy-access-field-label" for="proxy-chain-uri">{{ i.proxy_form_chain_uri }}</label>
+                <button type="button"
+                        class="btn btn-sm pp-copy-btn"
+                        id="copy-chain-uri-btn"
+                        data-copy-target="proxy-chain-uri"
+                        data-copy-state="idle"
+                        data-default-label="{{ i.proxy_form_copy_chain_btn }}"
+                        data-copied-label="{{ i.proxy_form_copied }}"
+                        data-success-message="{{ i.proxy_form_chain_uri_copied }}"
+                        data-error-message="{{ i.proxy_form_copy_failed }}">
+                  <i class="ti ti-copy"></i>
+                  <span class="pp-copy-btn-label">{{ i.proxy_form_copy_chain_btn }}</span>
+                </button>
+              </div>
+              <textarea class="form-control font-monospace" id="proxy-chain-uri" rows="3"
+                        readonly spellcheck="false">{{ proxy_summary.chain_uri }}</textarea>
+              <span class="form-hint">{{ i.proxy_form_chain_uri_hint }}</span>
+            </div>
+          </div>
+        </section>
+        {% endif %}
         <form method="post" action="{{ action_url }}" onsubmit="setLoading(this.querySelector('.btn-primary'))">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">

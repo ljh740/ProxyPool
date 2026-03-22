@@ -9,7 +9,10 @@
       </div>
     </div>
     <div class="pp-proxy-header-actions">
-      <a href="/dashboard/proxies/batch" class="btn btn-primary btn-sm">
+      <a href="/dashboard/proxies/import" class="btn btn-primary btn-sm">
+        <i class="ti ti-upload me-1"></i>{{ i.proxies_import_list }}
+      </a>
+      <a href="/dashboard/proxies/batch" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)">
         <i class="ti ti-stack me-1"></i>{{ i.proxies_batch_generate }}
       </a>
       {% if auto_count > 0 %}
@@ -74,12 +77,22 @@
           </td>
           <td class="pp-proxy-col-compact">
             <form style="display:inline" method="post"
+                  class="pp-toggle-pool-form"
+                  data-key="{{ entry.key }}"
                   action="/dashboard/proxies/{{ entry.key }}/toggle-pool">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               {% if entry.in_random_pool %}
-              <button type="submit" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_on_short }}</button>
+              <button type="submit" class="btn btn-sm pp-pool-toggle-btn"
+                      data-state="on"
+                      data-on-label="{{ i.proxies_pool_on_short }}"
+                      data-off-label="{{ i.proxies_pool_off_short }}"
+                      style="background:var(--pp-success-subtle);color:var(--pp-success);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_on_short }}</button>
               {% else %}
-              <button type="submit" class="btn btn-sm" style="background:var(--pp-surface-hover);color:var(--pp-text-muted);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_off_short }}</button>
+              <button type="submit" class="btn btn-sm pp-pool-toggle-btn"
+                      data-state="off"
+                      data-on-label="{{ i.proxies_pool_on_short }}"
+                      data-off-label="{{ i.proxies_pool_off_short }}"
+                      style="background:var(--pp-surface-hover);color:var(--pp-text-muted);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_off_short }}</button>
               {% endif %}
             </form>
           </td>
@@ -135,9 +148,14 @@
     <i class="ti ti-server-off" style="font-size:2.5rem;color:var(--pp-text-muted);margin-bottom:1rem;display:block"></i>
     <p style="font-size:1.1rem;font-weight:600;color:var(--pp-text);margin-bottom:0.5rem">{{ i.proxies_empty_title }}</p>
     <p style="color:var(--pp-text-secondary);margin-bottom:1.5rem">{{ i.proxies_empty_subtitle }}</p>
-    <a href="/dashboard/proxies/add" class="btn btn-primary">
-      <i class="ti ti-plus me-1"></i>{{ i.proxies_add_proxy }}
-    </a>
+    <div class="d-flex gap-2 justify-content-center flex-wrap">
+      <a href="/dashboard/proxies/import" class="btn btn-primary">
+        <i class="ti ti-upload me-1"></i>{{ i.proxies_import_list }}
+      </a>
+      <a href="/dashboard/proxies/add" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">
+        <i class="ti ti-plus me-1"></i>{{ i.proxies_add_proxy }}
+      </a>
+    </div>
   </div>
 </div>
 {% endif %}
@@ -146,3 +164,4 @@
   <div id="batch-keys"></div>
 </form>
 <span id="i18n-delete-selected-confirm" style="display:none">{{ i.proxies_delete_selected_confirm }}</span>
+<span id="i18n-pool-toggle-error" style="display:none">{{ i.proxies_pool_toggle_failed }}</span>

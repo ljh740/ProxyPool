@@ -1,0 +1,118 @@
+<div class="pp-page-header">
+  <h2>{{ i.import_title }}</h2>
+</div>
+<div class="row justify-content-center">
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="card-body" style="padding:1.5rem;">
+        {% if error %}
+        <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
+        {% endif %}
+        <form id="proxy-import-form" method="post" action="/dashboard/proxies/import" onsubmit="if(!document.getElementById('probe_before_import').checked){setLoading(this.querySelector('.btn-primary'));}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="alert alert-info" style="border-radius:6px;">
+            <div class="fw-semibold mb-1">{{ i.import_manual_notice_title }}</div>
+            <div>{{ i.import_manual_notice_body }}</div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="default_scheme">{{ i.import_default_scheme }}</label>
+              <select class="form-select" id="default_scheme" name="default_scheme">
+                {% for value in schemes %}
+                <option value="{{ value }}" {% if value == default_scheme %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+              <span class="form-hint">{{ i.import_default_scheme_hint }}</span>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="default_username">{{ i.import_default_username }}</label>
+              <input type="text" class="form-control" id="default_username" name="default_username"
+                     value="{{ default_username }}" placeholder="{{ i.import_optional }}">
+              <span class="form-hint">{{ i.import_default_auth_hint }}</span>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="default_password">{{ i.import_default_password }}</label>
+              <input type="text" class="form-control" id="default_password" name="default_password"
+                     value="{{ default_password }}" placeholder="{{ i.import_optional }}">
+              <span class="form-hint">{{ i.import_default_auth_hint }}</span>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="proxy_list_text">{{ i.import_proxy_list }}</label>
+            <textarea class="form-control font-monospace" id="proxy_list_text" name="proxy_list_text"
+                      rows="12" placeholder="{{ i.import_proxy_list_placeholder }}" required>{{ proxy_list_text }}</textarea>
+            <span class="form-hint">{{ i.import_proxy_list_hint }}</span>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="probe_before_import" name="probe_before_import" value="1" {% if probe_before_import %}checked{% endif %}>
+            <label class="form-check-label" for="probe_before_import">{{ i.import_probe_before }}</label>
+            <div class="form-hint">{{ i.import_probe_before_hint }}</div>
+          </div>
+          <div class="card" style="background:var(--pp-surface-secondary);border:1px solid var(--pp-border);">
+            <div class="card-body" style="padding:1rem 1.25rem;">
+              <div class="fw-semibold mb-2">{{ i.import_supported_formats }}</div>
+              <pre class="mb-0" style="white-space:pre-wrap;margin:0;color:var(--pp-text-secondary);font-size:0.85rem;">{{ i.import_examples }}</pre>
+            </div>
+          </div>
+          <div class="d-flex gap-2 mt-3">
+            <button type="submit" class="btn btn-primary"><span class="pp-btn-text"><i class="ti ti-upload me-1"></i>{{ i.import_submit }}</span></button>
+            <a href="/dashboard/proxies" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">{{ i.import_cancel }}</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="proxy-import-i18n"
+     data-status-pending="{{ i.import_check_status_pending }}"
+     data-status-ok="{{ i.import_check_status_ok }}"
+     data-status-error="{{ i.import_check_status_error }}"
+     data-running="{{ i.import_check_running }}"
+     data-completed="{{ i.import_check_completed }}"
+     data-failed="{{ i.import_check_failed_title }}"
+     data-commit="{{ i.import_check_commit }}"
+     data-close="{{ i.import_check_close }}"
+     data-no-success="{{ i.import_check_no_success }}"
+     data-processing="{{ i.import_check_processing }}"
+     data-unknown-error="{{ i.import_check_unknown_error }}"
+     data-running-error="{{ i.import_check_still_running }}"
+     style="display:none"></div>
+<div class="modal modal-blur fade" id="import-check-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">{{ i.import_check_modal_title }}</h5>
+        <button type="button" class="btn-close" id="import-check-close-x" data-bs-dismiss="modal" aria-label="{{ i.import_check_close }}"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div id="import-check-status-text" class="fw-semibold">{{ i.import_check_processing }}</div>
+            <div id="import-check-counts" class="text-secondary">0 / 0</div>
+          </div>
+          <div class="progress progress-sm">
+            <div id="import-check-progress-bar" class="progress-bar progress-bar-indeterminate" style="width:0%" role="progressbar" aria-valuemin="0" aria-valuemax="100"></div>
+          </div>
+        </div>
+        <div class="table-responsive" style="max-height:24rem;">
+          <table class="table table-vcenter">
+            <thead>
+              <tr>
+                <th>{{ i.import_check_column_line }}</th>
+                <th>{{ i.import_check_column_proxy }}</th>
+                <th>{{ i.import_check_column_status }}</th>
+                <th>{{ i.import_check_column_message }}</th>
+              </tr>
+            </thead>
+            <tbody id="import-check-results"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div id="import-check-summary" class="me-auto text-secondary"></div>
+        <button type="button" class="btn" id="import-check-close" data-bs-dismiss="modal">{{ i.import_check_close }}</button>
+        <button type="button" class="btn btn-primary" id="import-check-commit" disabled>{{ i.import_check_commit }}</button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -31,6 +31,7 @@ upstream_pool = importlib.import_module("upstream_pool")
 proxy_server = importlib.import_module("proxy_server")
 persistence = importlib.import_module("persistence")
 web_admin = importlib.import_module("web_admin")
+proxy_routes = importlib.import_module("admin_web.routes.proxies")
 
 UpstreamEntry = upstream_pool.UpstreamEntry
 UpstreamHop = upstream_pool.UpstreamHop
@@ -544,6 +545,118 @@ class TestE2EBrowser(unittest.TestCase):
             self.page.locator("text=browser-test.example.com").count() > 0,
         )
 
+    def test_edit_proxy_page_shows_copyable_chain_uri(self):
+        """Edit page exposes the full proxy chain in a copyable read-only field."""
+        self._login()
+        self._reset_storage()
+        hops = (
+            UpstreamHop("socks5", "browser-gate.example.com", 1080, "", ""),
+            UpstreamHop("http", "browser-edit.example.com", 10001, "u", "p"),
+        )
+        entry = UpstreamEntry(
+            key=compute_entry_key(hops),
+            label="browser-gate.example.com:1080 -> browser-edit.example.com:10001",
+            hops=hops,
+            source_tag="manual",
+            in_random_pool=True,
+        )
+        persistence.save_proxy_list(self._storage, [entry])
+
+        self.page.goto(f"{self.base_url}/dashboard/proxies/{entry.key}/edit")
+
+        self.assertEqual(self.page.locator("#proxy-entry-key").input_value(), entry.key)
+        self.assertEqual(
+            self.page.locator("#proxy-chain-uri").input_value(),
+            "socks5://browser-gate.example.com:1080 | http://u:p@browser-edit.example.com:10001",
+        )
+        self.assertTrue(self.page.locator("#copy-entry-key-btn").is_visible())
+        self.assertTrue(self.page.locator("#copy-chain-uri-btn").is_visible())
+
+        self.page.click("#copy-entry-key-btn")
+        self.page.wait_for_function(
+            "() => document.getElementById('copy-entry-key-btn').dataset.copyState === 'copied'"
+        )
+
+    def test_import_proxy_list_via_form(self):
+        """Fill import form -> submit -> imported proxies appear as manual entries."""
+        self._login()
+        self._reset_storage()
+        auto_entry = _make_entry("auto_existing", "auto-existing.example.com", 12000, source_tag="auto")
+        persistence.save_proxy_list(self._storage, [auto_entry])
+
+        self.page.goto(f"{self.base_url}/dashboard/proxies")
+        self.page.click('a[href="/dashboard/proxies/import"]')
+        self.page.wait_for_url("**/dashboard/proxies/import")
+        self.page.select_option("#default_scheme", "socks5")
+        self.page.fill("#default_username", "fallback-user")
+        self.page.fill("#default_password", "fallback-pass")
+        self.page.fill(
+            "#proxy_list_text",
+            "\n".join(
+                [
+                    "browser-import.example.com:21001",
+                    "http://127.0.0.1:30001 | browser-chain.example.com:21002",
+                ]
+            ),
+        )
+        self.page.click('button[type="submit"]')
+        self.page.wait_for_url("**/dashboard/proxies**")
+
+        self.assertTrue(
+            self.page.locator('tr[data-source="manual"] td.pp-proxy-label:has-text("browser-import.example.com")').is_visible()
+        )
+        self.assertTrue(
+            self.page.locator('tr[data-source="manual"] td.pp-proxy-label:has-text("browser-chain.example.com")').is_visible()
+        )
+        saved_entries = {entry.last_hop.host: entry for entry in persistence.load_proxy_list(self._storage)}
+        self.assertEqual(saved_entries["browser-import.example.com"].source_tag, "manual")
+        self.assertEqual(saved_entries["browser-import.example.com"].last_hop.scheme, "socks5")
+        self.assertEqual(saved_entries["browser-import.example.com"].last_hop.username, "fallback-user")
+        self.assertEqual(saved_entries["browser-chain.example.com"].chain_length, 2)
+        self.assertEqual(saved_entries["auto-existing.example.com"].source_tag, "auto")
+
+    def test_import_proxy_list_with_connectivity_check(self):
+        """Pre-check imported proxies, then save only the valid manual entries."""
+        self._login()
+        self._reset_storage()
+        auto_entry = _make_entry("auto_existing", "auto-existing.example.com", 12000, source_tag="auto")
+        persistence.save_proxy_list(self._storage, [auto_entry])
+
+        with patch.object(
+            proxy_routes,
+            "_probe_import_entry",
+            side_effect=[(True, ""), (False, "dial timeout")],
+        ):
+            self.page.goto(f"{self.base_url}/dashboard/proxies/import")
+            self.page.check("#probe_before_import")
+            self.page.select_option("#default_scheme", "socks5")
+            self.page.fill("#default_username", "fallback-user")
+            self.page.fill("#default_password", "fallback-pass")
+            self.page.fill(
+                "#proxy_list_text",
+                "\n".join(
+                    [
+                        "checked-ok.example.com:22001",
+                        "checked-bad.example.com:22002",
+                    ]
+                ),
+            )
+            self.page.click('button[type="submit"]')
+            self.page.wait_for_selector("#import-check-modal.show")
+            self.page.wait_for_function(
+                "() => document.getElementById('import-check-commit') && !document.getElementById('import-check-commit').disabled"
+            )
+            self.assertTrue(self.page.locator("text=checked-ok.example.com").count() > 0)
+            self.assertTrue(self.page.locator("text=checked-bad.example.com").count() > 0)
+            self.page.click("#import-check-commit")
+            self.page.wait_for_url("**/dashboard/proxies**")
+
+        saved_entries = {entry.last_hop.host: entry for entry in persistence.load_proxy_list(self._storage)}
+        self.assertIn("checked-ok.example.com", saved_entries)
+        self.assertNotIn("checked-bad.example.com", saved_entries)
+        self.assertEqual(saved_entries["checked-ok.example.com"].source_tag, "manual")
+        self.assertEqual(saved_entries["auto-existing.example.com"].source_tag, "auto")
+
     def test_delete_proxy_with_confirm(self):
         """Click delete -> browser confirm dialog -> proxy removed."""
         self._login()
@@ -636,6 +749,25 @@ class TestE2EBrowser(unittest.TestCase):
                 'td.pp-proxy-label:has-text("auto-filt-0.example.com")'
             ).is_visible()
         )
+
+    def test_pool_toggle_uses_ajax_without_navigation(self):
+        """Row-level random-pool toggle updates in place without a page refresh."""
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("ajax_pool", "ajax-pool.example.com", 12009, source_tag="manual")
+        persistence.save_proxy_list(self._storage, [entry])
+        self.page.goto(f"{self.base_url}/dashboard/proxies")
+        current_url = self.page.url
+        button = self.page.locator(
+            'form[action="/dashboard/proxies/ajax_pool/toggle-pool"] .pp-pool-toggle-btn'
+        )
+        self.assertEqual(button.text_content().strip(), "ON")
+        button.click()
+        self.page.wait_for_function(
+            "() => { const btn = document.querySelector('form[action=\"/dashboard/proxies/ajax_pool/toggle-pool\"] .pp-pool-toggle-btn'); return btn && btn.textContent.trim() === 'OFF'; }"
+        )
+        self.assertEqual(self.page.url, current_url)
+        self.assertFalse(persistence.load_proxy_list(self._storage)[0].in_random_pool)
 
     # ====================================================================
     # Tier 6: Batch Operations

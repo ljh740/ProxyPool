@@ -288,6 +288,135 @@ body {
   line-height: 1.45;
   word-break: break-word;
 }
+.pp-proxy-access-card {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 1.25rem;
+  padding: 1.15rem;
+  border: 1px solid var(--pp-border);
+  border-radius: 1.1rem;
+  background: linear-gradient(135deg, var(--pp-primary-subtle) 0%, var(--pp-surface) 58%);
+  box-shadow: var(--pp-card-shadow);
+}
+.pp-proxy-access-card::after {
+  content: "";
+  position: absolute;
+  top: -34px;
+  right: -34px;
+  width: 120px;
+  height: 120px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.28);
+  pointer-events: none;
+}
+[data-theme="dark"] .pp-proxy-access-card::after {
+  background: rgba(255,255,255,0.06);
+}
+.pp-proxy-access-header {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem 1rem;
+}
+.pp-proxy-access-headline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  min-width: 0;
+}
+.pp-proxy-access-icon {
+  width: 2.8rem;
+  height: 2.8rem;
+  border-radius: 0.95rem;
+  display: grid;
+  place-items: center;
+  background: var(--pp-surface);
+  color: var(--pp-primary);
+  border: 1px solid var(--pp-border);
+  box-shadow: var(--pp-card-shadow);
+  flex-shrink: 0;
+}
+.pp-proxy-access-icon .ti {
+  font-size: 1.2rem;
+}
+.pp-proxy-access-title {
+  color: var(--pp-text);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.pp-proxy-access-subtitle {
+  margin: 0.3rem 0 0;
+  color: var(--pp-text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.pp-proxy-access-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 250px) minmax(0, 1fr);
+  gap: 0.95rem;
+  margin-top: 1rem;
+}
+.pp-proxy-access-field {
+  min-width: 0;
+  padding: 0.95rem;
+  border: 1px solid var(--pp-border);
+  border-radius: 1rem;
+  background: var(--pp-surface);
+}
+.pp-proxy-access-field-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.pp-proxy-access-field-label {
+  color: var(--pp-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.pp-proxy-access-field .form-control {
+  background: var(--pp-bg) !important;
+  border-color: var(--pp-border) !important;
+  color: var(--pp-text) !important;
+}
+.pp-proxy-access-field textarea.form-control {
+  min-height: 4.8rem;
+  resize: vertical;
+}
+.pp-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--pp-border);
+  border-radius: 0.8rem;
+  background: var(--pp-surface);
+  color: var(--pp-text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.4rem 0.7rem;
+}
+.pp-copy-btn:hover {
+  border-color: var(--pp-primary);
+  color: var(--pp-primary);
+}
+.pp-copy-btn .ti {
+  font-size: 0.95rem;
+}
+.pp-copy-btn[data-copy-state="copied"] {
+  border-color: var(--pp-success);
+  background: var(--pp-success-subtle);
+  color: var(--pp-success);
+}
+.pp-copy-btn-label {
+  white-space: nowrap;
+}
 .pp-proxy-summary {
   display: flex;
   gap: 0.75rem;
@@ -475,6 +604,17 @@ body {
 }
 @keyframes pp-spin { to { transform: rotate(360deg); } }
 @media (max-width: 960px) {
+  .pp-proxy-access-header,
+  .pp-proxy-access-field-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pp-proxy-access-grid {
+    grid-template-columns: 1fr;
+  }
+  .pp-copy-btn {
+    justify-content: center;
+  }
   .pp-sidebar {
     transform: translateX(-100%);
     transition: transform 0.2s ease;
