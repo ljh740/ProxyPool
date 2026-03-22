@@ -1,20 +1,27 @@
 # ProxyPool
 
-Sticky upstream proxy router with shared-only routing.
+[中文说明](README.zh-CN.md) | [English](README.md)
 
-## Overview
-- Entry proxy: Python HTTP proxy (Docker)
-- Client auth + routing decision: Python helper
-- State and source of truth: SQLite
-- Upstream proxies: managed in Web Admin and persisted to SQLite admin state
-- Upstream chains: supports single-hop or multi-hop proxy chains
-- Supported upstream schemes: `http`, `socks5`, `socks5h`
-- Compatibility ports: optional fixed no-auth local listeners for clients that cannot send proxy credentials
+A self-hosted proxy management and routing service that gives your apps one stable local entrypoint in front of many upstream proxies.
 
-## Features
-- shared routing only: any username is accepted; the same username always maps to the same proxy entry
+## What This Project Does
+- manages upstream proxies through Web Admin instead of hand-editing runtime files
+- exposes one main local proxy entry on `3128` for browsers, scripts, and services
+- keeps outbound sessions stable by username while still allowing direct entry binding and random-pool routing
+- supports `http`, `socks5`, and `socks5h` upstreams, including multi-hop proxy chains
+- provides fixed compatibility ports for tools that cannot send proxy credentials
+
+## Typical Use Cases
+- browser automation profiles that need stable outbound identity
+- local tools or services that should use one proxy address instead of tracking many upstream credentials
+- teams that want a web-managed proxy pool with sticky sessions and explicit fallback access paths
+
+## Core Capabilities
+- username-based sticky routing: the same username stays on the same upstream entry
 - main authenticated listener on `3128` accepts inbound `http`, `socks5`, and `socks5h`
 - random pool override via `RANDOM_POOL_PREFIX`
+- proxy-list import adds pasted entries as manual proxies
+- import can optionally run a live connectivity check and save only the valid entries after confirmation
 - manual add/edit supports prepend-hop chains
 - batch generation supports direct hops and chained hops
 - compatibility port mappings can point to an exact `entry_key` or a sticky `session_name`
@@ -30,7 +37,7 @@ Sticky upstream proxy router with shared-only routing.
    - Create the admin password on `/setup`
    - `AUTH_PASSWORD` and `SALT` are generated automatically on first boot
 5. Add proxies in Web Admin:
-   - `Proxies` → `Add Proxy` or `Batch Generate`
+   - `Proxies` → `Import List`, `Add Proxy`, or `Batch Generate`
 6. Optional: configure compatibility ports:
    - `Compat Ports` → map one of `33100-33199` to an `entry_key` or `session_name`
 
@@ -92,6 +99,10 @@ They use a fixed Docker-published range because Docker cannot expose new host po
 
 ## Managing Proxies
 Use Web Admin `Proxies` page as the only runtime management entrypoint.
+The current Web Admin supports:
+- `Import List`: paste line-based proxy definitions, optionally run a live connectivity check, then save valid entries as manual proxies
+- `Add Proxy`: create or edit one manual proxy entry
+- `Batch Generate`: generate auto proxies from one host plus a port range
 
 ## Compatibility Ports
 Use Web Admin `Compat Ports` to manage the pre-published range `127.0.0.1:33100-33199`.
@@ -123,7 +134,7 @@ It also supports:
 - optional cycling first hop for chained relay scenarios
 
 ### Supported Line Formats
-When importing or generating chain-style values, supported hop formats are:
+When importing a proxy list or configuring chain-style hop values for batch generation, supported hop formats are:
 - `socks5://user:pass@host:port`
 - `http://user:pass@host:port`
 - `host:port`
@@ -146,7 +157,7 @@ Keep spaces around `|` so passwords containing `|` stay valid.
 - Generate chained output:
   - `python3 scripts/generate_upstream_list.py --host proxy.example.com --port-first 10001 --port-last 10100 --cycle-first-hop http://127.0.0.1:30001 --cycle-first-hop http://127.0.0.1:30002 --output config/upstreams.txt`
 - Latency benchmark: `./scripts/benchmark_chain_latency.sh`
-  - Compares direct vs chained profiles by importing explicit proxy list files through Web Admin persistence
+  - Compares direct vs chained profiles using explicit proxy configurations stored in project state
 
 ## Notes
 - `.env` contains credentials and should stay local.
