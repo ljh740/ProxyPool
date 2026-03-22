@@ -13,6 +13,7 @@ Sticky upstream proxy router with shared-only routing.
 
 ## Features
 - shared routing only: any username is accepted; the same username always maps to the same proxy entry
+- main authenticated listener on `3128` accepts inbound `http`, `socks5`, and `socks5h`
 - random pool override via `RANDOM_POOL_PREFIX`
 - manual add/edit supports prepend-hop chains
 - batch generation supports direct hops and chained hops
@@ -68,9 +69,11 @@ Notes:
   - Docker example: `docker compose exec squid python3 /opt/scripts/reset_admin_password.py`
 
 ## Usage
-Set client proxy to the local entry proxy (password is required):
+Set client proxy to the main local entry proxy on `3128` (password is required):
 - `HTTP_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
 - `HTTPS_PROXY=http://userA:YOUR_PASSWORD@localhost:3128`
+- `ALL_PROXY=socks5://userA:YOUR_PASSWORD@localhost:3128`
+- `ALL_PROXY=socks5h://userA:YOUR_PASSWORD@localhost:3128`
 
 On the main authenticated port:
 - The password must match the current `AUTH_PASSWORD`.
@@ -78,6 +81,7 @@ On the main authenticated port:
 - If the username equals an `entry_key`, the request is pinned to that exact upstream entry.
 - If the username starts with `RANDOM_POOL_PREFIX`, the request is routed through the random pool.
 - Otherwise, the username is hashed through shared routing, so the same username stays on the same upstream entry.
+- `socks5h` uses the same SOCKS5 listener and keeps destination hostname resolution on the proxy side when the client sends a domain target.
 
 For clients that cannot send proxy credentials, use a compatibility port instead:
 - Example exact entry binding: `http://127.0.0.1:33100`
@@ -99,6 +103,7 @@ Each mapping supports:
 Notes:
 - The main authenticated proxy on `3128` remains unchanged.
 - Compatibility listeners are separate no-auth ports intended for tools such as `undetected-chromedriver`.
+- Compatibility listeners remain HTTP-only; inbound SOCKS5 support is only enabled on the main authenticated listener.
 - If an `entry_key` mapping points to an entry that is later removed, requests on that compatibility port will fail until you update the mapping.
 - `session_name` is not a unique per-entry access key. The unique direct-access identifier is `entry_key`.
 

@@ -1,5 +1,6 @@
 import importlib
 import os
+import socket
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -27,6 +28,42 @@ UpstreamHop = upstream_pool.UpstreamHop
 CompatPortMapping = compat_ports.CompatPortMapping
 
 
+def _build_socks5_greeting(methods):
+    return bytes([proxy_server.SOCKS_VERSION, len(methods), *methods])
+
+
+def _build_socks5_auth(username, password):
+    username_bytes = username.encode("utf-8")
+    password_bytes = password.encode("utf-8")
+    return (
+        bytes([proxy_server.SOCKS_AUTH_VERSION, len(username_bytes)])
+        + username_bytes
+        + bytes([len(password_bytes)])
+        + password_bytes
+    )
+
+
+def _build_socks5_connect_request(host, port, *, command=proxy_server.SOCKS_CMD_CONNECT):
+    return bytes([proxy_server.SOCKS_VERSION, command, 0x00]) + encode_socks_address(
+        host,
+        port,
+    )
+
+
+def _recv_available(sock):
+    chunks = []
+    sock.settimeout(0.1)
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class ProxyServerTests(unittest.TestCase):
     def make_config(self, loopback_host_mode="auto", running_in_docker=True):
         return ProxyConfig(
@@ -41,6 +78,41 @@ class ProxyServerTests(unittest.TestCase):
             host_loopback_address="host.docker.internal",
             running_in_docker=running_in_docker,
         )
+
+    def make_entry(
+        self,
+        key="entry_1",
+        host="proxy.example.com",
+        port=10001,
+        scheme="socks5",
+    ):
+        return UpstreamEntry(
+            key=key,
+            label=f"{host}:{port}",
+            hops=(UpstreamHop(scheme, host, port, "user", "pass"),),
+        )
+
+    def make_server(self, *, config=None, route_entry=None):
+        server = MagicMock()
+        server.config = config or self.make_config()
+        server.router = MagicMock()
+        server.router.route_entry.return_value = route_entry
+        return server
+
+    def run_handler(self, payload, *, server=None, handler_class=None):
+        handler_class = handler_class or proxy_server.ProxyRequestHandler
+        server = server or self.make_server()
+        client_sock, server_sock = socket.socketpair()
+        try:
+            client_sock.sendall(payload)
+            handler_class(server_sock, ("127.0.0.1", 12345), server)
+            return _recv_available(client_sock)
+        finally:
+            client_sock.close()
+            try:
+                server_sock.close()
+            except OSError:
+                pass
 
     def test_parse_basic_credentials_success(self):
         header = "Basic dXNlcjpwYXNz"
@@ -75,6 +147,139 @@ class ProxyServerTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn("AUTH_PASSWORD is not configured", ctx.exception.body)
+
+    def test_proxy_handler_dispatches_http_requests_to_http_session(self):
+        server = self.make_server()
+        client_sock, server_sock = socket.socketpair()
+        try:
+            client_sock.sendall(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            with patch.object(
+                proxy_server.HttpProxyRequestHandler,
+                "handle",
+                autospec=True,
+            ) as http_handle:
+                proxy_server.ProxyRequestHandler(
+                    server_sock,
+                    ("127.0.0.1", 12345),
+                    server,
+                )
+        finally:
+            client_sock.close()
+            try:
+                server_sock.close()
+            except OSError:
+                pass
+
+        http_handle.assert_called_once()
+
+    def test_proxy_handler_accepts_socks5_connect_requests_on_main_port(self):
+        server = self.make_server(route_entry=self.make_entry())
+        payload = (
+            _build_socks5_greeting(
+                [proxy_server.SOCKS_METHOD_NO_AUTH, proxy_server.SOCKS_METHOD_USERNAME_PASSWORD]
+            )
+            + _build_socks5_auth("user-a", "secret")
+            + _build_socks5_connect_request("example.com", 443)
+        )
+        upstream_socket = MagicMock()
+
+        with patch.object(
+            proxy_server,
+            "open_upstream_tunnel",
+            return_value=upstream_socket,
+        ) as open_tunnel_mock, patch.object(
+            proxy_server,
+            "relay_bidirectional",
+        ) as relay_mock:
+            response = self.run_handler(payload, server=server)
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_USERNAME_PASSWORD,
+                    proxy_server.SOCKS_AUTH_VERSION,
+                    proxy_server.SOCKS_AUTH_STATUS_SUCCESS,
+                ]
+            )
+            + proxy_server.build_socks5_reply(proxy_server.SOCKS_REPLY_SUCCEEDED),
+        )
+        server.router.route_entry.assert_called_once_with("user-a")
+        open_tunnel_mock.assert_called_once_with(
+            server.config,
+            server.router.route_entry.return_value,
+            "example.com",
+            443,
+        )
+        relay_mock.assert_called_once()
+        upstream_socket.close.assert_called_once()
+
+    def test_proxy_handler_rejects_socks5_when_username_password_not_offered(self):
+        server = self.make_server()
+
+        response = self.run_handler(
+            _build_socks5_greeting([proxy_server.SOCKS_METHOD_NO_AUTH]),
+            server=server,
+        )
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_NO_ACCEPTABLE,
+                ]
+            ),
+        )
+        server.router.route_entry.assert_not_called()
+
+    def test_proxy_handler_rejects_socks5_invalid_credentials(self):
+        server = self.make_server(route_entry=self.make_entry())
+        payload = _build_socks5_greeting(
+            [proxy_server.SOCKS_METHOD_USERNAME_PASSWORD]
+        ) + _build_socks5_auth("user-a", "wrong-secret")
+
+        response = self.run_handler(payload, server=server)
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_USERNAME_PASSWORD,
+                    proxy_server.SOCKS_AUTH_VERSION,
+                    proxy_server.SOCKS_AUTH_STATUS_FAILURE,
+                ]
+            ),
+        )
+        server.router.route_entry.assert_not_called()
+
+    def test_proxy_handler_rejects_socks5_unsupported_command(self):
+        server = self.make_server(route_entry=self.make_entry())
+        payload = (
+            _build_socks5_greeting([proxy_server.SOCKS_METHOD_USERNAME_PASSWORD])
+            + _build_socks5_auth("user-a", "secret")
+            + _build_socks5_connect_request("example.com", 443, command=0x02)
+        )
+
+        response = self.run_handler(payload, server=server)
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_USERNAME_PASSWORD,
+                    proxy_server.SOCKS_AUTH_VERSION,
+                    proxy_server.SOCKS_AUTH_STATUS_SUCCESS,
+                ]
+            )
+            + proxy_server.build_socks5_reply(
+                proxy_server.SOCKS_REPLY_COMMAND_NOT_SUPPORTED
+            ),
+        )
+        server.router.route_entry.assert_not_called()
 
     def test_split_host_port_supports_default(self):
         self.assertEqual(split_host_port("example.com", 80), ("example.com", 80))
@@ -292,7 +497,6 @@ class ProxyServerTests(unittest.TestCase):
              patch.object(proxy_server.AppConfig, "load", return_value=app_config), \
              patch("persistence.open_storage", return_value=storage), \
              patch.object(proxy_server, "build_router", wraps=proxy_server.build_router) as build_router_mock, \
-             patch("persistence.save_config") as save_config_mock, \
              patch("persistence.load_proxy_list", return_value=[proxy_entry]) as load_proxy_list_mock, \
              patch("persistence.save_proxy_list") as save_proxy_list_mock, \
              patch.object(proxy_server, "ThreadedTCPServer", return_value=fake_server), \
@@ -301,7 +505,6 @@ class ProxyServerTests(unittest.TestCase):
 
         build_router_mock.assert_called_once_with(app_config, [proxy_entry])
         load_proxy_list_mock.assert_called_once_with(storage)
-        save_config_mock.assert_called_once()
         save_proxy_list_mock.assert_called_once_with(storage, [])
 
 

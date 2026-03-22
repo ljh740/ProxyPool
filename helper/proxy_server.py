@@ -11,7 +11,7 @@ import socketserver
 import sys
 import threading
 from dataclasses import dataclass
-from typing import List, Mapping, Tuple
+from typing import Callable, List, Mapping, Tuple
 from urllib.parse import urlsplit
 
 from auth import check_password
@@ -22,6 +22,21 @@ BUFFER_SIZE = 65536
 MAX_HEADER_LINE = 8192
 MAX_HEADER_LINES = 200
 SUPPORTED_UPSTREAM_SCHEMES = {"http", "socks5", "socks5h"}
+SOCKS_VERSION = 0x05
+SOCKS_AUTH_VERSION = 0x01
+SOCKS_METHOD_NO_AUTH = 0x00
+SOCKS_METHOD_USERNAME_PASSWORD = 0x02
+SOCKS_METHOD_NO_ACCEPTABLE = 0xFF
+SOCKS_CMD_CONNECT = 0x01
+SOCKS_ATYP_IPV4 = 0x01
+SOCKS_ATYP_DOMAIN = 0x03
+SOCKS_ATYP_IPV6 = 0x04
+SOCKS_REPLY_SUCCEEDED = 0x00
+SOCKS_REPLY_GENERAL_FAILURE = 0x01
+SOCKS_REPLY_COMMAND_NOT_SUPPORTED = 0x07
+SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
+SOCKS_AUTH_STATUS_SUCCESS = 0x00
+SOCKS_AUTH_STATUS_FAILURE = 0x01
 FILTERED_REQUEST_HEADERS = {
     "connection",
     "keep-alive",
@@ -49,6 +64,12 @@ class ClientError(ProxyError):
 
 class UpstreamError(ProxyError):
     pass
+
+
+class Socks5ProtocolError(ProxyError):
+    def __init__(self, message: str, *, reply_code: int | None = None):
+        super().__init__(message)
+        self.reply_code = reply_code
 
 
 @dataclass
@@ -219,6 +240,18 @@ def build_basic_authorization(username, password):
     return f"Basic {token}"
 
 
+def detect_inbound_protocol(sock):
+    try:
+        first_byte = sock.recv(1, socket.MSG_PEEK)
+    except OSError:
+        return "http"
+    if not first_byte:
+        return None
+    if first_byte[0] == SOCKS_VERSION:
+        return "socks5"
+    return "http"
+
+
 def read_request(rfile):
     request_line = rfile.readline(MAX_HEADER_LINE + 1)
     if not request_line:
@@ -313,6 +346,12 @@ def split_host_port(value, default_port):
     return value, default_port
 
 
+def format_authority(host, port):
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
 def encode_socks_address(host, port):
     try:
         address = ipaddress.ip_address(host)
@@ -335,6 +374,124 @@ def recv_exact(sock, size):
             raise UpstreamError("Unexpected EOF from upstream proxy")
         chunks.extend(chunk)
     return bytes(chunks)
+
+
+def read_exact_from_stream(stream, size, message):
+    data = stream.read(size)
+    if data is None or len(data) < size:
+        raise Socks5ProtocolError(message)
+    return data
+
+
+def read_socks5_methods(stream):
+    header = read_exact_from_stream(stream, 2, "Incomplete SOCKS5 greeting.")
+    version, method_count = header
+    if version != SOCKS_VERSION:
+        raise Socks5ProtocolError(f"Unsupported SOCKS version {version}.")
+    return read_exact_from_stream(
+        stream,
+        method_count,
+        "Incomplete SOCKS5 authentication methods.",
+    )
+
+
+def read_socks5_username_password(stream):
+    version = read_exact_from_stream(
+        stream,
+        1,
+        "Incomplete SOCKS5 username/password version.",
+    )[0]
+    if version != SOCKS_AUTH_VERSION:
+        raise Socks5ProtocolError(
+            f"Unsupported SOCKS5 auth version {version}.",
+            reply_code=SOCKS_REPLY_GENERAL_FAILURE,
+        )
+    username_length = read_exact_from_stream(
+        stream,
+        1,
+        "Incomplete SOCKS5 username length.",
+    )[0]
+    username = read_exact_from_stream(
+        stream,
+        username_length,
+        "Incomplete SOCKS5 username payload.",
+    )
+    password_length = read_exact_from_stream(
+        stream,
+        1,
+        "Incomplete SOCKS5 password length.",
+    )[0]
+    password = read_exact_from_stream(
+        stream,
+        password_length,
+        "Incomplete SOCKS5 password payload.",
+    )
+    try:
+        return username.decode("utf-8"), password.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Socks5ProtocolError(
+            "SOCKS5 credentials must be valid UTF-8.",
+            reply_code=SOCKS_REPLY_GENERAL_FAILURE,
+        ) from exc
+
+
+def read_socks5_address(stream, atyp):
+    if atyp == SOCKS_ATYP_IPV4:
+        return str(ipaddress.ip_address(read_exact_from_stream(stream, 4, "Incomplete SOCKS5 IPv4 address.")))
+    if atyp == SOCKS_ATYP_IPV6:
+        return str(ipaddress.ip_address(read_exact_from_stream(stream, 16, "Incomplete SOCKS5 IPv6 address.")))
+    if atyp == SOCKS_ATYP_DOMAIN:
+        length = read_exact_from_stream(stream, 1, "Incomplete SOCKS5 domain length.")[0]
+        domain = read_exact_from_stream(stream, length, "Incomplete SOCKS5 domain payload.")
+        try:
+            return domain.decode("idna")
+        except UnicodeDecodeError as exc:
+            raise Socks5ProtocolError(
+                "SOCKS5 destination host is not valid IDNA.",
+                reply_code=SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+            ) from exc
+    raise Socks5ProtocolError(
+        f"Unsupported SOCKS5 address type {atyp}.",
+        reply_code=SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+    )
+
+
+def read_socks5_request(stream):
+    header = read_exact_from_stream(stream, 4, "Incomplete SOCKS5 request header.")
+    version, command, _reserved, atyp = header
+    if version != SOCKS_VERSION:
+        raise Socks5ProtocolError(
+            f"Unsupported SOCKS5 request version {version}.",
+            reply_code=SOCKS_REPLY_GENERAL_FAILURE,
+        )
+    if command != SOCKS_CMD_CONNECT:
+        raise Socks5ProtocolError(
+            "Only SOCKS5 CONNECT is supported.",
+            reply_code=SOCKS_REPLY_COMMAND_NOT_SUPPORTED,
+        )
+    host = read_socks5_address(stream, atyp)
+    port = int.from_bytes(
+        read_exact_from_stream(stream, 2, "Incomplete SOCKS5 destination port."),
+        "big",
+    )
+    target = format_authority(host, port)
+    return ProxyRequest(
+        method="CONNECT",
+        target=target,
+        version="SOCKS5",
+        headers=[],
+        host=host,
+        port=port,
+        forward_target=target,
+        connect_tunnel=True,
+    )
+
+
+def build_socks5_reply(reply_code, bind_host="0.0.0.0", bind_port=0):
+    return bytes([SOCKS_VERSION, reply_code, 0x00]) + encode_socks_address(
+        bind_host,
+        bind_port,
+    )
 
 
 def discard_socks_reply_address(sock, atyp):
@@ -609,7 +766,7 @@ class CompatTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         return self.parent_server.router
 
 
-class ProxyRequestHandler(socketserver.StreamRequestHandler):
+class HttpProxyRequestHandler(socketserver.StreamRequestHandler):
     def handle(self):
         self.connection.settimeout(self.server.config.connect_timeout)
         request = None
@@ -695,24 +852,12 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         return username
 
     def handle_connect(self, request, username, upstream_entry):
-        upstream_socket = open_upstream_tunnel(
-            self.server.config,
+        self.relay_connect_tunnel(
+            request,
+            username,
             upstream_entry,
-            request.host,
-            request.port,
+            on_established=self._write_http_connect_success,
         )
-        try:
-            self.wfile.write(
-                b"HTTP/1.1 200 Connection established\r\nConnection: close\r\n\r\n"
-            )
-            self.wfile.flush()
-            self.connection.settimeout(None)
-            relay_bidirectional(
-                self.connection, upstream_socket, self.server.config.relay_timeout
-            )
-            self.log_request_result(request, username, upstream_entry, "ok_tunnel")
-        finally:
-            upstream_socket.close()
 
     def handle_http_request(self, request, username, upstream_entry):
         headers = replace_header(filter_headers(request.headers), "Connection", "close")
@@ -766,6 +911,36 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         finally:
             upstream_socket.close()
 
+    def relay_connect_tunnel(
+        self,
+        request,
+        username,
+        upstream_entry,
+        *,
+        on_established: Callable[[], None],
+    ):
+        upstream_socket = open_upstream_tunnel(
+            self.server.config,
+            upstream_entry,
+            request.host,
+            request.port,
+        )
+        try:
+            on_established()
+            self.connection.settimeout(None)
+            relay_bidirectional(
+                self.connection, upstream_socket, self.server.config.relay_timeout
+            )
+            self.log_request_result(request, username, upstream_entry, "ok_tunnel")
+        finally:
+            upstream_socket.close()
+
+    def _write_http_connect_success(self):
+        self.wfile.write(
+            b"HTTP/1.1 200 Connection established\r\nConnection: close\r\n\r\n"
+        )
+        self.wfile.flush()
+
     def send_error_response(self, status_code, reason, body, extra_headers=None):
         payload = body.encode("utf-8")
         lines = [
@@ -800,7 +975,104 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         )
 
 
-class CompatProxyRequestHandler(ProxyRequestHandler):
+class ProxyRequestHandler(HttpProxyRequestHandler):
+    def handle(self):
+        protocol = detect_inbound_protocol(self.connection)
+        if protocol is None:
+            return
+        if protocol == "socks5":
+            self.handle_socks5_session()
+            return
+        super().handle()
+
+    def handle_socks5_session(self):
+        self.connection.settimeout(self.server.config.connect_timeout)
+        request = None
+        username = "-"
+        upstream_entry = None
+        try:
+            methods = read_socks5_methods(self.rfile)
+            if not self.server.config.auth_password:
+                self.send_socks5_method_selection(SOCKS_METHOD_NO_ACCEPTABLE)
+                return
+            if SOCKS_METHOD_USERNAME_PASSWORD not in methods:
+                self.send_socks5_method_selection(SOCKS_METHOD_NO_ACCEPTABLE)
+                return
+            self.send_socks5_method_selection(SOCKS_METHOD_USERNAME_PASSWORD)
+
+            username, password = read_socks5_username_password(self.rfile)
+            if not username or not check_password(
+                password,
+                self.server.config.auth_password,
+            ):
+                self.send_socks5_auth_status(SOCKS_AUTH_STATUS_FAILURE)
+                return
+            self.send_socks5_auth_status(SOCKS_AUTH_STATUS_SUCCESS)
+
+            request = read_socks5_request(self.rfile)
+            upstream_entry = self.resolve_upstream_entry(username)
+            if upstream_entry is None:
+                self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+                self.log_request_result(
+                    request,
+                    username,
+                    upstream_entry,
+                    "client_error:no_upstream",
+                )
+                return
+            self.handle_socks5_connect(request, username, upstream_entry)
+        except Socks5ProtocolError as exc:
+            if exc.reply_code is not None:
+                self.send_socks5_reply(exc.reply_code)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"client_error:socks5:{exc}",
+            )
+        except UpstreamError as exc:
+            self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"upstream_error:{exc}",
+            )
+        except Exception as exc:
+            LOGGER.exception("Unhandled SOCKS5 proxy error")
+            self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"internal_error:{exc}",
+            )
+
+    def handle_socks5_connect(self, request, username, upstream_entry):
+        self.relay_connect_tunnel(
+            request,
+            username,
+            upstream_entry,
+            on_established=lambda: self.send_socks5_reply(SOCKS_REPLY_SUCCEEDED),
+        )
+
+    def send_socks5_method_selection(self, method):
+        self.wfile.write(bytes([SOCKS_VERSION, method]))
+        self.wfile.flush()
+
+    def send_socks5_auth_status(self, status):
+        self.wfile.write(bytes([SOCKS_AUTH_VERSION, status]))
+        self.wfile.flush()
+
+    def send_socks5_reply(self, reply_code):
+        try:
+            self.wfile.write(build_socks5_reply(reply_code))
+            self.wfile.flush()
+        except OSError:
+            pass
+
+
+class CompatProxyRequestHandler(HttpProxyRequestHandler):
     def authenticate(self, headers):
         del headers
         return self.server.mapping.target_value
