@@ -1,0 +1,69 @@
+<div class="pp-page-header">
+  <div class="pp-page-header-row">
+    <div>
+      <h2>
+        {{ i.logs_title }}
+        <span style="font-size:0.85rem;font-weight:400;color:var(--pp-text-secondary);margin-left:0.5rem" id="buffer-stats">{{ i.logs_buffer_stats }}</span>
+      </h2>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.5rem">
+      <span class="pp-badge pp-badge-success" id="auto-indicator">{{ i.logs_auto_refresh }}</span>
+    </div>
+  </div>
+</div>
+<div class="pp-toolbar">
+  <label class="form-label mb-0" for="level-filter" style="font-size:0.85rem">{{ i.logs_level_label }}</label>
+  <select class="form-select form-select-sm" id="level-filter"
+          style="width:auto" onchange="applyFilter()">
+    <option value="ALL" {{"selected" if level == "ALL" else ""}}>{{ i.logs_filter_all }}</option>
+    <option value="INFO" {{"selected" if level == "INFO" else ""}}>{{ i.logs_filter_info }}</option>
+    <option value="WARNING" {{"selected" if level == "WARNING" else ""}}>{{ i.logs_filter_warning }}</option>
+    <option value="ERROR" {{"selected" if level == "ERROR" else ""}}>{{ i.logs_filter_error }}</option>
+  </select>
+  <form method="post" action="/dashboard/logs/clear" onsubmit="setLoading(this.querySelector('button'))" style="margin-left:auto">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)">
+      <span class="pp-btn-text"><i class="ti ti-trash me-1"></i>{{ i.logs_clear_buffer }}</span>
+    </button>
+  </form>
+</div>
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-vcenter table-striped card-table">
+      <thead>
+        <tr>
+          <th>{{ i.logs_th_timestamp }}</th>
+          <th>{{ i.logs_th_level }}</th>
+          <th>{{ i.logs_th_client_ip }}</th>
+          <th>{{ i.logs_th_username }}</th>
+          <th>{{ i.logs_th_method }}</th>
+          <th>{{ i.logs_th_target }}</th>
+          <th>{{ i.logs_th_upstream }}</th>
+          <th>{{ i.logs_th_result }}</th>
+        </tr>
+      </thead>
+      <tbody id="log-table-body">
+        {% if not entries %}
+        <tr>
+          <td colspan="8" style="text-align:center;color:var(--pp-text-secondary);padding:2rem">
+            {{ i.logs_empty }}
+          </td>
+        </tr>
+        {% endif %}
+        {% for entry in entries %}
+        <tr>
+          <td><code>{{ entry.get("timestamp", "-") }}</code></td>
+          <td><span class="pp-badge {% if entry.get("level", "") in ("ERROR", "CRITICAL") %}pp-log-error{% elif entry.get("level", "") == "WARNING" %}pp-log-warning{% elif entry.get("level", "") == "DEBUG" %}pp-log-debug{% else %}pp-log-info{% endif %}">{{ entry.get("level", "-") }}</span></td>
+          <td><code>{{ entry.get("client_ip", "-") }}</code></td>
+          <td>{{ entry.get("username", "-") }}</td>
+          <td>{{ entry.get("method", "-") }}</td>
+          <td><code style="word-break:break-all">{{ entry.get("target", "-") }}</code></td>
+          <td><code style="word-break:break-all">{{ entry.get("upstream", "-") }}</code></td>
+          <td>{{ entry.get("result", "-") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+<div style="color:var(--pp-text-muted);font-size:0.8rem;margin-top:0.5rem" id="status-line"></div>

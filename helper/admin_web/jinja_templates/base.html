@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="{{ html_lang }}"{{ theme_attr | safe }}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProxyPool - {{ title }}</title>
+<link rel="stylesheet" href="/static/css/tabler.min.css">
+<link rel="stylesheet" href="/static/css/tabler-icons.min.css">
+{{ theme_css | safe }}
+{{ extra_head | safe }}
+</head>
+<body>
+<div id="pp-toast-container" class="pp-toast-container"></div>
+<div class="pp-layout">
+{{ sidebar | safe }}
+{{ main_open | safe }}
+{{ topbar | safe }}
+<div class="pp-content">
+{{ content | safe }}
+</div>
+{{ main_close | safe }}
+</div>
+<script src="/static/js/tabler.min.js"></script>
+<script>
+{{ shell_js | safe }}
+</script>
+{{ extra_scripts | safe }}
+</body>
+</html>

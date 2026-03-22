@@ -29,9 +29,15 @@ trim_spaces() {
   printf "%s" "$1" | tr -d ' '
 }
 
-UPSTREAM_HOST=${UPSTREAM_HOST:-$(env_file_value UPSTREAM_HOST)}
-UPSTREAM_SCHEME=${UPSTREAM_SCHEME:-$(env_file_value UPSTREAM_SCHEME)}
+BENCHMARK_UPSTREAM_HOST=${BENCHMARK_UPSTREAM_HOST:-$(env_file_value BENCHMARK_UPSTREAM_HOST)}
+BENCHMARK_UPSTREAM_SCHEME=${BENCHMARK_UPSTREAM_SCHEME:-$(env_file_value BENCHMARK_UPSTREAM_SCHEME)}
+BENCHMARK_UPSTREAM_USER=${BENCHMARK_UPSTREAM_USER:-$(env_file_value BENCHMARK_UPSTREAM_USER)}
+BENCHMARK_UPSTREAM_PASS=${BENCHMARK_UPSTREAM_PASS:-$(env_file_value BENCHMARK_UPSTREAM_PASS)}
 AUTH_PASSWORD=${AUTH_PASSWORD:-$(env_file_value AUTH_PASSWORD)}
+
+if [ -z "$BENCHMARK_UPSTREAM_SCHEME" ]; then
+  BENCHMARK_UPSTREAM_SCHEME="http"
+fi
 
 VERIFY_URL=${VERIFY_URL:-https://ipinfo.io/json}
 PROXY_HOST=${PROXY_HOST:-localhost}
@@ -54,12 +60,13 @@ if [ -z "$PROXY_PASS" ]; then
   exit 1
 fi
 
-if [ -z "$UPSTREAM_HOST" ] && { [ -z "$DIRECT_UPSTREAM_FILE" ] || [ -z "$CHAIN_UPSTREAM_FILE" ]; }; then
-  echo "UPSTREAM_HOST is required when auto-generating benchmark upstream files"
+if [ -z "$BENCHMARK_UPSTREAM_HOST" ] && { [ -z "$DIRECT_UPSTREAM_FILE" ] || [ -z "$CHAIN_UPSTREAM_FILE" ]; }; then
+  echo "BENCHMARK_UPSTREAM_HOST is required when auto-generating benchmark upstream files"
   exit 1
 fi
 
 tmp_dir=$(mktemp -d)
+original_proxy_list_file="$tmp_dir/original_proxy_list.json"
 generated_direct_file="$ROOT/config/.benchmark_direct_$$.txt"
 generated_chain_file="$ROOT/config/.benchmark_chain_$$.txt"
 prepared_direct_file="$ROOT/config/.benchmark_direct_input_$$.txt"
@@ -67,20 +74,26 @@ prepared_chain_file="$ROOT/config/.benchmark_chain_input_$$.txt"
 raw_direct="$tmp_dir/direct.tsv"
 raw_chain="$tmp_dir/chain.tsv"
 
-original_upstream_list_file=""
-if docker compose ps -q squid >/dev/null 2>&1; then
-  original_upstream_list_file=$(docker compose exec -T squid sh -c 'printf "%s" "${UPSTREAM_LIST_FILE:-}"' 2>/dev/null || true)
-fi
+backup_current_proxy_list() {
+  if [ -z "$(docker compose ps -q squid 2>/dev/null)" ]; then
+    printf "[]" > "$original_proxy_list_file"
+    return
+  fi
+  docker compose exec -T squid python3 -c 'import sys; sys.path.insert(0, "/opt/helper"); from persistence import STATE_KEY_PROXY_LIST, open_storage; storage = open_storage(); raw = storage.get(STATE_KEY_PROXY_LIST); sys.stdout.write(raw if raw is not None else "[]")' > "$original_proxy_list_file"
+}
 
 restore_original() {
   if [ "$RESTORE_ORIGINAL" != "1" ]; then
     return
   fi
-  if [ -n "$original_upstream_list_file" ]; then
-    UPSTREAM_LIST_FILE="$original_upstream_list_file" docker compose up -d --force-recreate >/dev/null 2>&1 || true
-  else
-    docker compose up -d --force-recreate >/dev/null 2>&1 || true
+  if [ ! -f "$original_proxy_list_file" ]; then
+    return
   fi
+  if [ -z "$(docker compose ps -q squid 2>/dev/null)" ]; then
+    docker compose up -d >/dev/null 2>&1 || true
+  fi
+  docker compose exec -T squid python3 -c 'import sys; sys.path.insert(0, "/opt/helper"); from persistence import STATE_KEY_PROXY_LIST, open_storage; storage = open_storage(); raw = sys.stdin.read().strip(); storage.set(STATE_KEY_PROXY_LIST, raw if raw else "[]")' < "$original_proxy_list_file" >/dev/null 2>&1 || true
+  docker compose up -d --force-recreate squid >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -105,7 +118,7 @@ generate_default_direct_file() {
   while [ "$idx" -lt "${#ports[@]}" ]; do
     local upstream_port
     upstream_port=$(trim_spaces "${ports[$idx]}")
-    printf "%s:%s\n" "$UPSTREAM_HOST" "$upstream_port" >> "$generated_direct_file"
+    printf "%s:%s\n" "$BENCHMARK_UPSTREAM_HOST" "$upstream_port" >> "$generated_direct_file"
     idx=$((idx + 1))
   done
   DIRECT_UPSTREAM_FILE="$generated_direct_file"
@@ -137,7 +150,7 @@ generate_default_chain_file() {
     local host_port
     upstream_port=$(trim_spaces "${ports[$idx]}")
     host_port=$(trim_spaces "${host_ports[$idx]}")
-    printf "http://127.0.0.1:%s | %s:%s\n" "$host_port" "$UPSTREAM_HOST" "$upstream_port" >> "$generated_chain_file"
+    printf "http://127.0.0.1:%s | %s:%s\n" "$host_port" "$BENCHMARK_UPSTREAM_HOST" "$upstream_port" >> "$generated_chain_file"
     idx=$((idx + 1))
   done
   CHAIN_UPSTREAM_FILE="$generated_chain_file"
@@ -175,26 +188,40 @@ prepare_benchmark_input() {
   return 0
 }
 
-if [ -z "$DIRECT_UPSTREAM_FILE" ]; then
-  generate_default_direct_file
-fi
-if [ -z "$CHAIN_UPSTREAM_FILE" ]; then
-  generate_default_chain_file
-fi
-
-DIRECT_UPSTREAM_FILE=$(prepare_benchmark_input direct "$DIRECT_UPSTREAM_FILE")
-CHAIN_UPSTREAM_FILE=$(prepare_benchmark_input chain "$CHAIN_UPSTREAM_FILE")
-
-if [ -z "$DIRECT_UPSTREAM_FILE" ] || [ -z "$CHAIN_UPSTREAM_FILE" ]; then
-  echo "benchmark input files are required"
-  exit 1
-fi
-
 container_path_for() {
   local host_path="$1"
   local base
   base=$(basename "$host_path")
   printf "/opt/config/%s" "$base"
+}
+
+save_profile_to_storage() {
+  local host_file="$1"
+  local container_file
+  local saved_count
+  container_file=$(container_path_for "$host_file")
+  saved_count=$(docker compose exec -T squid python3 - "$container_file" "$BENCHMARK_UPSTREAM_SCHEME" "$BENCHMARK_UPSTREAM_USER" "$BENCHMARK_UPSTREAM_PASS" <<'PY'
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import open_storage, save_proxy_list
+from upstream_pool import build_list_entries
+
+path, default_scheme, default_username, default_password = sys.argv[1:5]
+with open(path, "r", encoding="utf-8") as handle:
+    entries = build_list_entries(
+        handle.read().splitlines(),
+        default_scheme,
+        default_username,
+        default_password,
+    )
+save_proxy_list(open_storage(), entries)
+print(len(entries))
+PY
+)
+  if ! [[ "$saved_count" =~ ^[0-9]+$ ]] || [ "$saved_count" -le 0 ]; then
+    echo "failed to load benchmark profile: $host_file"
+    exit 1
+  fi
 }
 
 wait_for_proxy() {
@@ -211,9 +238,8 @@ wait_for_proxy() {
 
 apply_profile() {
   local host_file="$1"
-  local container_file
-  container_file=$(container_path_for "$host_file")
-  UPSTREAM_LIST_FILE="$container_file" docker compose up -d --force-recreate >/dev/null
+  save_profile_to_storage "$host_file"
+  docker compose up -d --force-recreate >/dev/null
   if ! wait_for_proxy; then
     echo "proxy did not become ready after applying profile: $host_file"
     exit 1
@@ -356,6 +382,23 @@ PY
 }
 
 docker compose build squid >/dev/null
+docker compose up -d >/dev/null
+backup_current_proxy_list
+
+if [ -z "$DIRECT_UPSTREAM_FILE" ]; then
+  generate_default_direct_file
+fi
+if [ -z "$CHAIN_UPSTREAM_FILE" ]; then
+  generate_default_chain_file
+fi
+
+DIRECT_UPSTREAM_FILE=$(prepare_benchmark_input direct "$DIRECT_UPSTREAM_FILE")
+CHAIN_UPSTREAM_FILE=$(prepare_benchmark_input chain "$CHAIN_UPSTREAM_FILE")
+
+if [ -z "$DIRECT_UPSTREAM_FILE" ] || [ -z "$CHAIN_UPSTREAM_FILE" ]; then
+  echo "benchmark input files are required"
+  exit 1
+fi
 
 apply_profile "$DIRECT_UPSTREAM_FILE"
 run_requests "direct" "$tmp_dir/direct_warmup.tsv" "$WARMUP_ROUNDS" "0"

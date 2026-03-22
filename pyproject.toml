@@ -1,0 +1,35 @@
+[project]
+name = "proxypool"
+version = "1.0.0"
+description = "Sticky upstream proxy router with web admin panel"
+requires-python = ">=3.10"
+dependencies = [
+    "Flask>=3.0",
+    "Flask-WTF>=1.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "flake8",
+    "pytest",
+    "requests",
+    "playwright",
+]
+
+[project.scripts]
+proxypool = "helper.proxy_server:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["helper/vendor/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"helper/web_admin.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

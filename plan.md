@@ -1,25 +1,23 @@
-
-
-# plan.md — Sticky Upstream Proxy Router (shared/exclusive switchable)
+# plan.md — Sticky Upstream Proxy Router
 
 ## Goal
-在一台 macOS 服务器上（Docker 环境），搭建一个“入口代理”（HTTP proxy），让 Docker 内的服务统一连入口代理出网；入口代理再把请求转发到一组外部上游 HTTP 代理（同一 host，不同端口 10001-10100，账号密码一致）。
+在一台 macOS 服务器上（Docker 环境），搭建一个入口 HTTP 代理，让容器或客户端统一连入口代理出网；入口代理再转发到由 Web Admin 管理的一组外部上游代理。上游代理列表持久化在 SQLite，支持单跳与多跳链路。
 
-需要支持两种可切换策略：
+当前只保留一种路由策略：
 
-1. **Shared（共享）**：任意 username 都可用；同一个 username 总是落到同一个上游端口（粘性）。允许不同 username 共享同一条上游；目标是分布尽量均匀，避免极端偏斜。
-2. **Exclusive（独享）**：任意 username 都可用；每个 username 独占一个上游端口（100 个用户最多 100 个端口），不允许多个用户共享同一端口。若端口耗尽：可配置拒绝或降级到 shared。
-
-可选扩展：
-- **SharedCapped（共享限载）**：共享但限制每个端口最多绑定 X 个用户。
+1. **Shared（共享）**：任意 username 都可用；同一个 username 总是落到同一个代理条目。
+2. **Random Pool Prefix（随机池前缀）**：命中 `RANDOM_POOL_PREFIX` 的 username 走随机池，不参与 shared 哈希。
+3. **Compat Session Alias（兼容会话别名）**：`session_name` 只作为稳定别名参与 shared 路由，不代表唯一 upstream entry key。
 
 ---
 
 ## High-level Architecture
-- 入口代理：Squid（Docker）
-- 路由决策：Squid external ACL → Python helper
-- 状态存储（exclusive/shared_capped）：Redis
-- 上游代理：UPSTREAM_HOST + 端口 10001-10100 + 统一账号密码
+- 入口代理：Python HTTP proxy（Docker）
+- 路由决策：Python `router.py`
+- 状态存储：SQLite
+- 运行时配置真源：SQLite `config`
+- 上游代理列表真源：SQLite `proxy_list`
+- 管理入口：Web Admin
 
 ---
 
@@ -30,38 +28,48 @@ ProxyPool/
   squid/
     Dockerfile
     entrypoint.sh
-    squid.conf.in
   helper/
+    auth.py
+    config_center.py
+    persistence.py
+    proxy_server.py
     router.py
-    requirements.txt
+    upstream_pool.py
+    web_admin.py
   scripts/
-    gen_squid_conf.py
+    benchmark_chain_latency.sh
+    generate_upstream_list.py
+    verify.sh
+    verify_real.sh
   plan.md
 ```
 
 ---
 
-## Environment Variables
+## Bootstrap Environment Variables
+仅以下变量在进程启动时直接从环境读取：
+
+``` 
+STATE_DB_PATH=/data/proxypool.sqlite3
+WEB_PORT=8077
+```
+
+其余运行时配置统一保存在 SQLite 状态文件中，由 Web Admin 管理；管理员密码在首启 `/setup` 中创建。
+
+---
+
+## Runtime Configuration
+运行时配置示例：
 
 ```
-UPSTREAM_HOST=proxy.example.com
-UP_USER=foo
-UP_PASS=bar
-
-PORT_FIRST=10001
-PORT_LAST=10100
-
-MODE=shared            # shared | exclusive | shared_capped
 SALT=change-me
-
-EXCLUSIVE_FALLBACK=deny   # deny | shared
-TTL_SECONDS=0             # 0 = 永久绑定
-
-CAP_PER_PORT=2            # shared_capped 使用
-
-REDIS_HOST=redis
-REDIS_PORT=6379
+RANDOM_POOL_PREFIX=rnd_
+AUTH_PASSWORD=change-me
+PROXY_HOST=0.0.0.0
+PROXY_PORT=3128
 ```
+
+这些值不再依赖 legacy upstream 环境变量，而是以 SQLite `config` 为准。
 
 ---
 
@@ -70,89 +78,65 @@ REDIS_PORT=6379
 ### Shared (stateless)
 ```
 idx = uint32(sha256(SALT + username)[0..3]) % N
-port = PORT_FIRST + idx
+entry = upstream_entries[idx]
 ```
 
-### Exclusive (stateful)
-- 如果存在 bind:user → 返回
-- 否则扫描端口池，SETNX port:<port> user
-- 成功后写 bind:user port
-- 若耗尽 → fallback 或 ERR
+### Random Pool Prefix
+- 若 username 以前缀 `RANDOM_POOL_PREFIX` 开头
+- 则只在标记为 `in_random_pool=true` 的 entry 中随机选择
+- 若随机池为空，则请求失败
 
-### SharedCapped
-- 若 user 已绑定 → 返回
-- 否则选择负载 < CAP_PER_PORT 的端口
-- 绑定并增加计数
+### Exact Entry Access
+- 若 username 直接等于某个 `entry_key`
+- 则跳过 shared 哈希，直接路由到该 entry
 
----
-
-## Squid Integration
-
-- 使用 basic_fake_auth 只要求携带用户名
-- external_acl_type 调用 router.py
-- router.py 返回：OK message=<port> 或 ERR
-- 每个端口对应一个 cache_peer
+### Compat Session Alias
+- `session_name` 兼容端口会把 `target_value` 当作普通 username
+- 然后复用 shared 路由逻辑
+- 它不是唯一 entry 标识；唯一精确标识仍然是 `entry_key`
 
 ---
 
-## Implementation Steps
+## Runtime Flow
+1. `proxy_server.py` 启动
+2. 打开 SQLite 状态文件
+3. 读取 `config`
+4. 读取 `proxy_list`
+5. 构建 `UpstreamPool(source="admin")`
+6. 启动代理服务与 Web Admin
 
-### 1. Dockerfile (squid)
+运行时不再从 `UPSTREAM_HOST`、`UPSTREAM_LIST`、`UPSTREAM_LIST_FILE` 或端口范围配置构建 upstream。
 
-- FROM ubuntu/squid
-- 安装 python3, pip
-- pip install redis
-- 拷贝 helper 和 entrypoint
+---
 
-### 2. router.py
-
-- 从 env 读取 MODE
-- 根据 MODE 调用对应策略
-- 连接 Redis（如需要）
-- stdin → stdout 循环
-
-### 3. gen_squid_conf.py
-
-- 读取 env
-- 生成：
-  - cache_peer 列表
-  - acl is_<port>
-  - cache_peer_access
-
-### 4. entrypoint.sh
-
-- 调用 gen_squid_conf.py > /etc/squid/squid.conf
-- squid -k parse
-- squid -N -f /etc/squid/squid.conf
-
-### 5. docker-compose.yml
-
-- squid + redis
-- 暴露 3128
+## Proxy Management
+- 手动添加/编辑代理
+- 批量生成代理
+- 支持 prepend hop
+- 支持 cycle first hop
+- 支持启用/禁用随机池参与
+- 所有变更持久化到 SQLite，并通过 reload 生效
 
 ---
 
 ## Usage
 
 ```
-HTTP_PROXY=http://userA:x@squid:3128
-HTTPS_PROXY=http://userA:x@squid:3128
+HTTP_PROXY=http://userA:x@localhost:3128
+HTTPS_PROXY=http://userA:x@localhost:3128
 ```
 
 ---
 
 ## Testing
-
-- 同一 username 多次请求 → 同一出口
-- shared：不同 username 大致均匀
-- exclusive：user1..user100 端口唯一
-- user101 → 拒绝或降级
+- 同一 username 多次请求 → 同一代理条目
+- 不同普通 username 在 shared 分流下分布相对均匀
+- `entry_key` 直连始终命中指定代理条目
+- `RANDOM_POOL_PREFIX` 命中时只在随机池条目中随机选择
+- 启动与 reload 都从 SQLite `proxy_list` 生效
 
 ---
 
 ## Defaults
-
-- MODE=shared
 - SALT 固定保存
-- EXCLUSIVE_FALLBACK=deny
-- TTL_SECONDS=0
+- RANDOM_POOL_PREFIX 默认留空

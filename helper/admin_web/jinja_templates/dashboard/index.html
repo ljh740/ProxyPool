@@ -1,0 +1,69 @@
+<div class="pp-page-header">
+  <h2>{{ i.dashboard_title }}</h2>
+</div>
+<div class="row row-cards" style="--tblr-gutter-x:1rem;">
+  <div class="col-sm-6 col-lg-4">
+    <a class="card" href="/dashboard/config" style="text-decoration:none">
+      <div class="pp-stat-card">
+        <div class="pp-stat-icon blue"><i class="ti ti-settings"></i></div>
+        <div>
+          <div class="pp-stat-label">{{ i.dashboard_configuration }}</div>
+          <div style="font-size:0.85rem;color:var(--pp-text-secondary);margin-top:0.2rem;">{{ i.dashboard_config_desc }}</div>
+        </div>
+      </div>
+    </a>
+  </div>
+  <div class="col-sm-6 col-lg-4">
+    <a class="card" href="/dashboard/proxies" style="text-decoration:none">
+      <div class="pp-stat-card">
+        <div class="pp-stat-icon green"><i class="ti ti-server-2"></i></div>
+        <div>
+          <div class="pp-stat-label">{{ i.dashboard_proxies }}</div>
+          <div class="pp-stat-value">{{ proxy_count }}</div>
+          <div style="font-size:0.8rem;color:var(--pp-text-muted)">{{ i.dashboard_proxies_configured }}</div>
+        </div>
+      </div>
+    </a>
+  </div>
+  <div class="col-sm-6 col-lg-4">
+    <a class="card" href="/dashboard/logs" style="text-decoration:none">
+      <div class="pp-stat-card">
+        <div class="pp-stat-icon orange"><i class="ti ti-list-details"></i></div>
+        <div>
+          <div class="pp-stat-label">{{ i.dashboard_logs }}</div>
+          <div class="pp-stat-value">{{ log_count }}</div>
+          <div style="font-size:0.8rem;color:var(--pp-text-muted)">{{ i.dashboard_entries_in_buffer }}</div>
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
+<div class="card mt-3">
+  <div class="card-header" style="padding:0.75rem 1.25rem;">
+    <h3 class="card-title" style="font-size:0.9rem;margin:0;"><i class="ti ti-info-circle me-1"></i>{{ i.dashboard_server_info }}</h3>
+  </div>
+  <div class="pp-info-grid">
+    <div>
+      <div class="pp-info-item-label">{{ i.dashboard_listen }}</div>
+      <div class="pp-info-item-value">{{ listen_host }}:{{ listen_port }}</div>
+    </div>
+    <div>
+      <div class="pp-info-item-label">{{ i.dashboard_web_port }}</div>
+      <div class="pp-info-item-value">{{ web_port }}</div>
+    </div>
+    <div>
+      <div class="pp-info-item-label">{{ i.dashboard_auth_password }}</div>
+      <div class="pp-info-item-value">
+        {% if has_auth %}
+        <span class="pp-badge pp-badge-success">{{ i.dashboard_auth_set }}</span>
+        {% else %}
+        <span class="pp-badge pp-badge-warning">{{ i.dashboard_auth_not_set }}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="pp-info-item-label">{{ i.dashboard_uptime }}</div>
+      <div class="pp-info-item-value"><span class="pp-badge pp-badge-success">{{ i.dashboard_running }}</span></div>
+    </div>
+  </div>
+</div>

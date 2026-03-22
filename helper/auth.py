@@ -6,7 +6,7 @@ import sys
 
 
 def check_password(provided, expected):
-    if expected is None:
+    if not expected:
         return False
     return hmac.compare_digest(provided or "", expected)
 

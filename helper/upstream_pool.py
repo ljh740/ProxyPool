@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
 
 import csv
-import os
+import hashlib
 import re
-import sys
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Tuple
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 SUPPORTED_UPSTREAM_SCHEMES = {"http", "socks5", "socks5h"}
 CHAIN_SEPARATOR_PATTERN = re.compile(r"\s+\|\s+")
-
-
-def env_int(name, default):
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
 
 
 @dataclass(frozen=True)
@@ -40,6 +29,8 @@ class UpstreamEntry:
     key: str
     label: str
     hops: Tuple[UpstreamHop, ...]
+    source_tag: str = "manual"
+    in_random_pool: bool = True
 
     def __post_init__(self):
         if not self.hops:
@@ -69,8 +60,6 @@ class UpstreamPool:
     entry_map: Dict[str, UpstreamEntry] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        if not self.entries:
-            raise ValueError("No upstream entries configured")
         keys = [entry.key for entry in self.entries]
         if len(keys) != len(set(keys)):
             raise ValueError("Upstream entry keys must be unique")
@@ -95,38 +84,21 @@ def ensure_supported_scheme(scheme):
     return normalized
 
 
-def build_range_pool():
-    scheme = ensure_supported_scheme(os.getenv("UPSTREAM_SCHEME", "http"))
-    host = os.getenv("UPSTREAM_HOST", "")
-    username = os.getenv("UP_USER", "")
-    password = os.getenv("UP_PASS", "")
-    port_first = env_int("PORT_FIRST", 10001)
-    port_last = env_int("PORT_LAST", 10100)
-
-    if not host:
-        raise ValueError("UPSTREAM_HOST must be configured for range mode")
-    if port_last < port_first:
-        raise ValueError("PORT_LAST must be >= PORT_FIRST")
-
-    entries = []
-    for port in range(port_first, port_last + 1):
-        key = str(port)
-        entries.append(
-            UpstreamEntry(
-                key=key,
-                label=key,
-                hops=(
-                    UpstreamHop(
-                        scheme=scheme,
-                        host=host,
-                        port=port,
-                        username=username,
-                        password=password,
-                    ),
-                ),
+def compute_entry_key(hops):
+    """Compute a stable md5-based key from the full hop chain."""
+    canonical_parts = []
+    for hop in hops:
+        auth = ""
+        if hop.username or hop.password:
+            auth = "%s:%s@" % (
+                quote(hop.username, safe=""),
+                quote(hop.password, safe=""),
             )
+        canonical_parts.append(
+            "%s://%s%s:%s" % (hop.scheme, auth, hop.host, hop.port)
         )
-    return UpstreamPool(source="range", entries=entries)
+    canonical = "|".join(canonical_parts)
+    return hashlib.md5(canonical.encode()).hexdigest()[:12]
 
 
 def parse_csv_line(line, default_scheme, default_username, default_password):
@@ -238,17 +210,17 @@ def parse_upstream_line(
             )
         )
 
-    entry_number = index + 1
+    hops = tuple(hops)
     label = " -> ".join(f"{hop.host}:{hop.port}" for hop in hops)
     return UpstreamEntry(
-        key=f"upstream_{entry_number}",
-        label=f"{label}#{entry_number}",
-        hops=tuple(hops),
+        key=compute_entry_key(hops),
+        label=label,
+        hops=hops,
     )
 
 
-def build_list_pool(
-    lines: Iterable[str], source, default_scheme, default_username, default_password
+def build_list_entries(
+    lines: Iterable[str], default_scheme, default_username, default_password
 ):
     entries = []
     for line in lines:
@@ -257,60 +229,4 @@ def build_list_pool(
         )
         if entry is not None:
             entries.append(entry)
-    return UpstreamPool(source=source, entries=entries)
-
-
-def load_upstream_pool_from_env():
-    default_scheme = ensure_supported_scheme(os.getenv("UPSTREAM_SCHEME", "http"))
-    default_username = os.getenv("UP_USER", "")
-    default_password = os.getenv("UP_PASS", "")
-    list_file = os.getenv("UPSTREAM_LIST_FILE", "").strip()
-    inline_list = os.getenv("UPSTREAM_LIST", "")
-
-    if list_file:
-        with open(list_file, "r", encoding="utf-8") as handle:
-            return build_list_pool(
-                handle.readlines(),
-                "file",
-                default_scheme,
-                default_username,
-                default_password,
-            )
-
-    if inline_list.strip():
-        return build_list_pool(
-            inline_list.splitlines(),
-            "inline",
-            default_scheme,
-            default_username,
-            default_password,
-        )
-
-    return build_range_pool()
-
-
-def print_usage():
-    print("Usage: upstream_pool.py [count|source|list]", file=sys.stderr)
-
-
-def main():
-    command = sys.argv[1] if len(sys.argv) > 1 else "count"
-    pool = load_upstream_pool_from_env()
-
-    if command == "count":
-        print(pool.count)
-        return
-    if command == "source":
-        print(pool.source)
-        return
-    if command == "list":
-        for entry in pool.entries:
-            print(f"{entry.key}\t{entry.label}\t{entry.display}")
-        return
-
-    print_usage()
-    sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+    return entries

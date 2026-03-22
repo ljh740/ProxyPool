@@ -1,0 +1,28 @@
+<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem;">
+  <div style="width:100%;max-width:380px;">
+    <div style="text-align:center;margin-bottom:2rem;">
+      <i class="ti ti-network" style="font-size:2.5rem;color:var(--pp-primary)"></i>
+      <h1 style="font-size:1.4rem;font-weight:700;margin:0.5rem 0 0;color:var(--pp-text)">ProxyPool</h1>
+    </div>
+    <div class="card">
+      <div class="card-body" style="padding:2rem;">
+        <h2 style="font-size:1.1rem;font-weight:600;text-align:center;margin-bottom:1.5rem;">{{ i.login_title }}</h2>
+        {% if error %}
+        <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/login" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label class="form-label" for="password">{{ i.login_password_label }}</label>
+            <input type="password" class="form-control" id="password"
+                   name="password" placeholder="{{ i.login_password_placeholder }}"
+                   autofocus required>
+          </div>
+          <div class="form-footer">
+            <button type="submit" class="btn btn-primary w-100" style="padding:0.6rem;">{{ i.login_btn }}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

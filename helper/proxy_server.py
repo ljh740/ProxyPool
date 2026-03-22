@@ -9,11 +9,14 @@ import selectors
 import socket
 import socketserver
 import sys
+import threading
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Mapping, Tuple
 from urllib.parse import urlsplit
 
 from auth import check_password
+from compat_ports import TARGET_TYPE_ENTRY_KEY
+from config_center import AppConfig
 
 BUFFER_SIZE = 65536
 MAX_HEADER_LINE = 8192
@@ -62,31 +65,39 @@ class ProxyConfig:
     running_in_docker: bool
 
     @classmethod
-    def from_env(cls):
+    def from_app_config(cls, app_config: AppConfig, *, strict: bool = True):
         config = cls(
-            listen_host=os.getenv("PROXY_HOST", "0.0.0.0"),
-            listen_port=env_int("PROXY_PORT", 3128),
-            auth_password=os.getenv("AUTH_PASSWORD", ""),
-            auth_realm=os.getenv("AUTH_REALM", "Proxy"),
-            connect_timeout=env_float("UPSTREAM_CONNECT_TIMEOUT", 20.0),
-            connect_retries=max(1, env_int("UPSTREAM_CONNECT_RETRIES", 3)),
-            relay_timeout=env_float("RELAY_TIMEOUT", 120.0),
-            loopback_host_mode=os.getenv("REWRITE_LOOPBACK_TO_HOST", "auto").lower(),
-            host_loopback_address=os.getenv(
-                "HOST_LOOPBACK_ADDRESS", "host.docker.internal"
-            ),
+            listen_host=app_config.proxy_host,
+            listen_port=app_config.proxy_port,
+            auth_password=app_config.auth_password,
+            auth_realm=app_config.auth_realm,
+            connect_timeout=app_config.upstream_connect_timeout,
+            connect_retries=app_config.upstream_connect_retries,
+            relay_timeout=app_config.relay_timeout,
+            loopback_host_mode=app_config.rewrite_loopback_to_host,
+            host_loopback_address=app_config.host_loopback_address,
             running_in_docker=is_running_in_docker(),
         )
 
         if not config.auth_password:
-            raise ValueError("AUTH_PASSWORD must be configured")
+            if strict:
+                raise ValueError("AUTH_PASSWORD must be configured")
+            LOGGER.warning(
+                "AUTH_PASSWORD is not configured — all proxy connections will be rejected. "
+                "Set it via the web admin Config Center."
+            )
         if config.loopback_host_mode not in {"auto", "always", "off"}:
             raise ValueError("REWRITE_LOOPBACK_TO_HOST must be auto, always, or off")
-        if "\\~" in os.getenv("UP_PASS", ""):
-            LOGGER.warning(
-                "UP_PASS contains literal '\\~'. In .env files that usually means a shell escape was copied literally."
-            )
         return config
+
+    @classmethod
+    def from_env(cls):
+        return cls.from_app_config(AppConfig.from_bootstrap_env())
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]):
+        """Construct a ProxyConfig from flat env-keyed values."""
+        return cls.from_app_config(AppConfig.from_mapping(data))
 
 
 @dataclass
@@ -99,6 +110,13 @@ class ProxyRequest:
     port: int
     forward_target: str
     connect_tunnel: bool
+
+
+@dataclass
+class CompatListenerHandle:
+    mapping: object
+    server: socketserver.BaseServer
+    thread: threading.Thread
 
 
 def env_int(name, default):
@@ -144,10 +162,14 @@ def should_send_absolute_form(request, upstream_entry):
     return (not request.connect_tunnel) and upstream_entry.last_hop.scheme == "http"
 
 
-def build_router():
+def build_router(app_config: AppConfig, proxy_entries):
     from router import Router
+    from upstream_pool import UpstreamPool
 
-    return Router()
+    return Router(
+        config=app_config,
+        upstream_pool=UpstreamPool(source="admin", entries=list(proxy_entries)),
+    )
 
 
 def header_value(headers, name):
@@ -565,7 +587,26 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     def __init__(self, server_address, handler_class, config, router):
         self.config = config
         self.router = router
+        self.compat_listeners = {}
         super().__init__(server_address, handler_class)
+
+
+class CompatTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, server_address, handler_class, parent_server, mapping):
+        self.parent_server = parent_server
+        self.mapping = mapping
+        super().__init__(server_address, handler_class)
+
+    @property
+    def config(self):
+        return self.parent_server.config
+
+    @property
+    def router(self):
+        return self.parent_server.router
 
 
 class ProxyRequestHandler(socketserver.StreamRequestHandler):
@@ -579,7 +620,7 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
             if request is None:
                 return
             username = self.authenticate(request.headers)
-            upstream_entry = self.server.router.route_entry(username)
+            upstream_entry = self.resolve_upstream_entry(username)
             if upstream_entry is None:
                 raise ClientError(
                     503, "Service Unavailable", "No upstream port available."
@@ -608,7 +649,19 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
                 request, username, upstream_entry, f"internal_error:{exc}"
             )
 
+    def resolve_upstream_entry(self, username):
+        return self.server.router.route_entry(username)
+
     def authenticate(self, headers):
+        if not self.server.config.auth_password:
+            raise ClientError(
+                503,
+                "Service Unavailable",
+                (
+                    "Proxy server AUTH_PASSWORD is not configured. "
+                    "Set it in Web Admin > Configuration before using the proxy."
+                ),
+            )
         credentials = parse_basic_credentials(
             header_value(headers, "Proxy-Authorization")
         )
@@ -747,6 +800,121 @@ class ProxyRequestHandler(socketserver.StreamRequestHandler):
         )
 
 
+class CompatProxyRequestHandler(ProxyRequestHandler):
+    def authenticate(self, headers):
+        del headers
+        return self.server.mapping.target_value
+
+    def resolve_upstream_entry(self, username):
+        del username
+        mapping = self.server.mapping
+        router = self.server.router
+        if mapping.target_type == TARGET_TYPE_ENTRY_KEY:
+            upstream_entry = router.get_entry(mapping.target_value)
+            if upstream_entry is None:
+                raise ClientError(
+                    503,
+                    "Service Unavailable",
+                    "Configured compatibility target is unavailable.",
+                )
+            return upstream_entry
+        return router.route_entry(mapping.target_value)
+
+
+def _compat_listener_registry(parent_server):
+    registry = getattr(parent_server, "compat_listeners", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        parent_server.compat_listeners = registry
+    return registry
+
+
+def _stop_compat_listener(listener):
+    try:
+        listener.server.shutdown()
+    except Exception:
+        LOGGER.exception(
+            "Failed to stop compat listener on port %s",
+            listener.mapping.listen_port,
+        )
+    finally:
+        try:
+            listener.server.server_close()
+        except Exception:
+            LOGGER.exception(
+                "Failed to close compat listener on port %s",
+                listener.mapping.listen_port,
+            )
+        if listener.thread.is_alive():
+            listener.thread.join(timeout=1.0)
+
+
+def close_compat_listeners(parent_server):
+    if parent_server is None:
+        return
+    registry = _compat_listener_registry(parent_server)
+    for port, listener in list(registry.items()):
+        _stop_compat_listener(listener)
+        registry.pop(port, None)
+
+
+def reload_compat_listeners(parent_server, storage=None):
+    if parent_server is None:
+        return {}
+
+    registry = _compat_listener_registry(parent_server)
+    if storage is None:
+        router = getattr(parent_server, "router", None)
+        storage = getattr(router, "storage", None)
+
+    from persistence import load_compat_port_mappings
+
+    desired = {
+        mapping.listen_port: mapping
+        for mapping in load_compat_port_mappings(storage)
+        if mapping.enabled
+    }
+
+    for port, listener in list(registry.items()):
+        mapping = desired.get(port)
+        if mapping is None or listener.mapping != mapping:
+            _stop_compat_listener(listener)
+            registry.pop(port, None)
+
+    bind_host = parent_server.config.listen_host
+    for port, mapping in desired.items():
+        if port in registry:
+            continue
+        try:
+            compat_server = CompatTCPServer(
+                (bind_host, port),
+                CompatProxyRequestHandler,
+                parent_server,
+                mapping,
+            )
+            thread = threading.Thread(
+                target=compat_server.serve_forever,
+                name="compat-port-%s" % port,
+                daemon=True,
+            )
+            thread.start()
+            registry[port] = CompatListenerHandle(
+                mapping=mapping,
+                server=compat_server,
+                thread=thread,
+            )
+            LOGGER.info(
+                "Compat listener started on %s:%s -> %s:%s",
+                bind_host,
+                port,
+                mapping.target_type,
+                mapping.target_value,
+            )
+        except Exception:
+            LOGGER.exception("Failed to start compat listener on port %s", port)
+    return registry
+
+
 def rebuild_absolute_target(request, headers):
     host_header = header_value(headers, "Host")
     if request.target.startswith("http://"):
@@ -759,13 +927,44 @@ def rebuild_absolute_target(request, headers):
 
 
 def main():
+    bootstrap_config = AppConfig.from_bootstrap_env()
     logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        level=bootstrap_config.log_level,
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stdout,
     )
-    config = ProxyConfig.from_env()
-    router = build_router()
+    from persistence import (
+        STATE_KEY_PROXY_LIST,
+        load_proxy_list,
+        open_storage,
+        save_proxy_list,
+    )
+
+    storage = open_storage(bootstrap_config.state_db_path)
+    app_config = AppConfig.load(storage)
+    logging.getLogger().setLevel(app_config.log_level)
+    if storage.get(STATE_KEY_PROXY_LIST) is None:
+        save_proxy_list(storage, [])
+    config = ProxyConfig.from_app_config(app_config, strict=False)
+    proxy_entries = load_proxy_list(storage)
+
+    try:
+        router = build_router(app_config, proxy_entries)
+        router.storage = storage
+    except Exception:
+        LOGGER.warning(
+            "Failed to build router from persisted proxy list — starting with empty upstream pool. "
+            "Configure proxies via the web admin panel, then reload.",
+            exc_info=True,
+        )
+        from router import Router
+        from upstream_pool import UpstreamPool
+
+        router = Router(
+            config=app_config,
+            upstream_pool=UpstreamPool(source="admin", entries=[]),
+        )
+        router.storage = storage
     server = ThreadedTCPServer(
         (config.listen_host, config.listen_port), ProxyRequestHandler, config, router
     )
@@ -776,11 +975,38 @@ def main():
         router.upstream_pool.source,
         router.upstream_pool.count,
     )
+    reload_compat_listeners(server, storage)
+
+    # Start web admin panel as daemon thread
+    log_handler = None
+    try:
+        from web_admin import RingBufferHandler, start_admin_server
+
+        log_handler = RingBufferHandler(2000)
+        logging.getLogger().addHandler(log_handler)
+
+        start_admin_server(
+            host="0.0.0.0",
+            port=app_config.admin_port,
+            server_ref=server,
+            log_handler=log_handler,
+        )
+        if app_config.admin_password:
+            LOGGER.info("Admin panel started on port %s", app_config.admin_port)
+        else:
+            LOGGER.info(
+                "Admin panel started on port %s in setup mode; visit /setup to create the admin password",
+                app_config.admin_port,
+            )
+    except Exception:
+        LOGGER.exception("Failed to start admin panel")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         LOGGER.info("Shutting down")
     finally:
+        close_compat_listeners(server)
         server.server_close()
 
 

@@ -1,0 +1,61 @@
+<div class="pp-page-header">
+  <h2>{{ i.config_title }}</h2>
+</div>
+<form method="post" action="/dashboard/config/save" id="config-form" onsubmit="setLoading(this.querySelector('.btn-primary'))">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% for section in sections %}
+  <div class="card mb-3" id="group-{{ section.key }}">
+    {% if section.collapsed %}
+    <div class="card-header" style="padding:0.75rem 1.25rem;cursor:pointer;user-select:none;" onclick="var b=this.parentNode.querySelector('.card-body');var c=this.querySelector('.ti-chevron-down,.ti-chevron-right');if(b.style.display==='none'){b.style.display='';c.className=c.className.replace('ti-chevron-right','ti-chevron-down')}else{b.style.display='none';c.className=c.className.replace('ti-chevron-down','ti-chevron-right')}">
+      <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
+        <div>
+          <h3 class="card-title" style="font-size:0.9rem;margin:0;"><i class="{{ section.icon }} me-1"></i>{{ section.title }}</h3>
+          {% if section.description %}
+          <p class="text-secondary" style="font-size:0.78rem;margin:0.25rem 0 0 0;">{{ section.description }}</p>
+          {% endif %}
+        </div>
+        <i class="ti ti-chevron-right" style="font-size:1rem;color:var(--pp-text-muted)"></i>
+      </div>
+    </div>
+    <div class="card-body" style="display:none">
+    {% else %}
+    <div class="card-header" style="padding:0.75rem 1.25rem;">
+      <div>
+        <h3 class="card-title" style="font-size:0.9rem;margin:0;"><i class="{{ section.icon }} me-1"></i>{{ section.title }}</h3>
+        {% if section.description %}
+        <p class="text-secondary" style="font-size:0.78rem;margin:0.25rem 0 0 0;">{{ section.description }}</p>
+        {% endif %}
+      </div>
+    </div>
+    <div class="card-body">
+    {% endif %}
+      {% for field in section.fields %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ field.env_key }}">{{ field.label }}</label>
+        {% if field.input_type == "select" %}
+        <select class="form-select" id="{{ field.env_key }}" name="{{ field.env_key }}">
+          {% for opt in field.options %}
+          <option value="{{ opt.value }}" {% if field.value == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+        {% elif field.input_type == "number" %}
+        <input type="number" class="form-control" id="{{ field.env_key }}" name="{{ field.env_key }}"
+               value="{{ field.value }}">
+        {% elif field.input_type == "float" %}
+        <input type="text" class="form-control" id="{{ field.env_key }}" name="{{ field.env_key }}"
+               value="{{ field.value }}" inputmode="decimal">
+        {% else %}
+        <input type="text" class="form-control" id="{{ field.env_key }}" name="{{ field.env_key }}"
+               value="{{ field.value }}">
+        {% endif %}
+        <span class="form-hint">{{ field.help_text }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-primary"><span class="pp-btn-text"><i class="ti ti-device-floppy me-1"></i>{{ i.config_save_apply }}</span></button>
+    <a href="/dashboard" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">{{ i.config_cancel }}</a>
+  </div>
+</form>

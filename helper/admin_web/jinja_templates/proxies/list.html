@@ -1,0 +1,148 @@
+<div class="pp-page-header pp-proxy-header">
+  <div class="pp-page-header-row">
+    <div class="pp-proxy-heading">
+      <h2>{{ i.proxies_title }}</h2>
+      <div class="pp-proxy-summary">
+        <span class="pp-proxy-summary-item">{{ total }} {{ i.proxies_total }}</span>
+        <span class="pp-proxy-summary-item">{{ manual_count }} {{ i.proxies_manual }}</span>
+        <span class="pp-proxy-summary-item">{{ auto_count }} {{ i.proxies_auto }}</span>
+      </div>
+    </div>
+    <div class="pp-proxy-header-actions">
+      <a href="/dashboard/proxies/batch" class="btn btn-primary btn-sm">
+        <i class="ti ti-stack me-1"></i>{{ i.proxies_batch_generate }}
+      </a>
+      {% if auto_count > 0 %}
+      <form method="post" action="/dashboard/proxies/batch/clear" style="display:inline" onsubmit="setLoading(this.querySelector('button'))">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-sm" style="border:1px solid var(--pp-danger);color:var(--pp-danger)"
+                onclick="return confirm('{{ i.proxies_clear_confirm }}')">
+          <span class="pp-btn-text"><i class="ti ti-trash me-1"></i>{{ i.proxies_clear_all_auto }}</span></button>
+      </form>
+      {% endif %}
+      <a href="/dashboard/proxies/add" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)">
+        <i class="ti ti-plus me-1"></i>{{ i.proxies_add_proxy }}
+      </a>
+    </div>
+  </div>
+</div>
+{% if total %}
+<div class="pp-toolbar pp-proxy-toolbar">
+  <div class="pp-proxy-filter" role="group" aria-label="Source filter">
+    <a href="{{ filter_urls['all'] }}" class="btn btn-sm{% if active_filter == 'all' %} active{% endif %}" data-filter="all">{{ i.proxies_filter_all }}</a>
+    <a href="{{ filter_urls['manual'] }}" class="btn btn-sm{% if active_filter == 'manual' %} active{% endif %}" data-filter="manual">{{ i.proxies_filter_manual }}</a>
+    <a href="{{ filter_urls['auto'] }}" class="btn btn-sm{% if active_filter == 'auto' %} active{% endif %}" data-filter="auto">{{ i.proxies_filter_auto }}</a>
+  </div>
+  {% if entries %}
+  <div id="batch-toolbar" style="display:none" class="pp-proxy-batch-toolbar">
+    <span style="color:var(--pp-text-secondary);font-size:0.85rem"><span id="selected-count">0</span> {{ i.proxies_selected }}</span>
+    <button type="button" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" onclick="invertSelection()">{{ i.proxies_invert }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none" onclick="batchTogglePool('on')">{{ i.proxies_pool_on }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-warning-subtle);color:var(--pp-warning);border:none" onclick="batchTogglePool('off')">{{ i.proxies_pool_off }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none" onclick="batchDelete()">{{ i.proxies_delete_selected }}</button>
+  </div>
+  {% endif %}
+</div>
+<div class="card">
+  {% if entries %}
+  <div class="table-responsive">
+    <table class="table table-vcenter table-striped card-table pp-proxy-table">
+      <thead>
+        <tr>
+          <th class="pp-proxy-col-compact" style="width:40px"><input type="checkbox" class="form-check-input" id="select-all"></th>
+          <th class="pp-proxy-col-compact">{{ i.proxies_th_key }}</th>
+          <th>{{ i.proxies_th_label }}</th>
+          <th>{{ i.proxies_th_hops }}</th>
+          <th class="pp-proxy-col-compact">{{ i.proxies_th_source }}</th>
+          <th class="pp-proxy-col-compact">{{ i.proxies_th_random_pool }}</th>
+          <th class="pp-proxy-col-compact">{{ i.proxies_th_actions }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for entry in entries %}
+        <tr data-source="{{ entry.source_tag }}">
+          <td><input type="checkbox" class="form-check-input row-check" value="{{ entry.key }}"></td>
+          <td class="pp-proxy-key"><code>{{ entry.key }}</code></td>
+          <td class="pp-proxy-label">{{ entry.label }}</td>
+          <td class="pp-proxy-chain"><code>{{ entry.display }}</code> <small style="color:var(--pp-text-muted)">({{ entry.chain_length }})</small></td>
+          <td class="pp-proxy-col-compact">
+            {% if entry.source_tag == 'manual' %}
+            <span class="pp-badge pp-badge-manual">{{ i.proxies_badge_manual }}</span>
+            {% else %}
+            <span class="pp-badge pp-badge-auto">{{ i.proxies_badge_auto }}</span>
+            {% endif %}
+          </td>
+          <td class="pp-proxy-col-compact">
+            <form style="display:inline" method="post"
+                  action="/dashboard/proxies/{{ entry.key }}/toggle-pool">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% if entry.in_random_pool %}
+              <button type="submit" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_on_short }}</button>
+              {% else %}
+              <button type="submit" class="btn btn-sm" style="background:var(--pp-surface-hover);color:var(--pp-text-muted);border:none;font-weight:600;font-size:0.75rem">{{ i.proxies_pool_off_short }}</button>
+              {% endif %}
+            </form>
+          </td>
+          <td class="pp-proxy-col-compact">
+            <div class="pp-table-actions">
+              <a href="/dashboard/proxies/{{ entry.key }}/edit"
+                 class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text);font-size:0.8rem">{{ i.proxies_btn_edit }}</a>
+              <form method="post" style="display:inline"
+                    action="/dashboard/proxies/{{ entry.key }}/delete"
+                    onsubmit="setLoading(this.querySelector('button'))">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm" style="border:1px solid var(--pp-danger);color:var(--pp-danger);font-size:0.8rem"
+                        onclick="return confirm('{{ i.proxies_delete_confirm }}')"><span class="pp-btn-text">{{ i.proxies_btn_del }}</span></button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="padding:3rem;text-align:center">
+    <i class="ti ti-filter-off" style="font-size:2.5rem;color:var(--pp-text-muted);margin-bottom:1rem;display:block"></i>
+    <p style="font-size:1.1rem;font-weight:600;color:var(--pp-text);margin-bottom:0.5rem">{{ i.proxies_filter_empty_title }}</p>
+    <p style="color:var(--pp-text-secondary);margin-bottom:0">{{ i.proxies_filter_empty_subtitle }}</p>
+  </div>
+  {% endif %}
+</div>
+{% if entries and total_pages > 1 %}
+<div class="d-flex justify-content-between align-items-center mt-3">
+  <span style="color:var(--pp-text-secondary);font-size:0.85rem">{{ i.proxies_showing }}</span>
+  <ul class="pagination mb-0">
+    {% if page > 1 %}
+    <li class="page-item"><a class="page-link" href="{{ prev_page_url }}">{{ i.proxies_prev }}</a></li>
+    {% endif %}
+    {% for page_number in page_range %}
+    {% if page_number == page %}
+    <li class="page-item active"><a class="page-link" href="{{ page_urls[page_number] }}">{{ page_number }}</a></li>
+    {% else %}
+    <li class="page-item"><a class="page-link" href="{{ page_urls[page_number] }}">{{ page_number }}</a></li>
+    {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <li class="page-item"><a class="page-link" href="{{ next_page_url }}">{{ i.proxies_next }}</a></li>
+    {% endif %}
+  </ul>
+</div>
+{% endif %}
+{% else %}
+<div class="card" style="padding:3rem;text-align:center">
+  <div>
+    <i class="ti ti-server-off" style="font-size:2.5rem;color:var(--pp-text-muted);margin-bottom:1rem;display:block"></i>
+    <p style="font-size:1.1rem;font-weight:600;color:var(--pp-text);margin-bottom:0.5rem">{{ i.proxies_empty_title }}</p>
+    <p style="color:var(--pp-text-secondary);margin-bottom:1.5rem">{{ i.proxies_empty_subtitle }}</p>
+    <a href="/dashboard/proxies/add" class="btn btn-primary">
+      <i class="ti ti-plus me-1"></i>{{ i.proxies_add_proxy }}
+    </a>
+  </div>
+</div>
+{% endif %}
+<form id="batch-form" method="post" style="display:none">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div id="batch-keys"></div>
+</form>
+<span id="i18n-delete-selected-confirm" style="display:none">{{ i.proxies_delete_selected_confirm }}</span>

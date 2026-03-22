@@ -23,11 +23,30 @@ if [ -z "$squid_id" ]; then
   exit 1
 fi
 
-MODE=$(docker compose exec -T squid sh -c 'printf "%s" "${MODE:-shared}"')
-UPSTREAM_SOURCE=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py source)
-UPSTREAM_COUNT=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py count)
+read_runtime_json() {
+  docker compose exec -T squid python3 - <<'PY'
+import json
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import load_config, load_proxy_list, open_storage
+
+storage = open_storage()
+config = load_config(storage)
+entries = load_proxy_list(storage)
+print(json.dumps({
+    "routing": "shared",
+    "upstream_source": "admin",
+    "upstream_count": len(entries),
+}))
+PY
+}
+
+RUNTIME_JSON=$(read_runtime_json)
+ROUTING=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["routing"])')
+UPSTREAM_SOURCE=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_source"])')
+UPSTREAM_COUNT=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_count"])')
 if ! [[ "$UPSTREAM_COUNT" =~ ^[0-9]+$ ]] || [ "$UPSTREAM_COUNT" -le 0 ]; then
-  echo "invalid upstream count: $UPSTREAM_COUNT"
+  echo "no upstreams configured in SQLite state. Add real proxies in Web Admin before running verify_real.sh"
   exit 1
 fi
 
@@ -48,9 +67,6 @@ fi
 SAMPLE_USERS=${SAMPLE_USERS:-5}
 if [ "$SAMPLE_USERS" -lt 1 ]; then
   SAMPLE_USERS=1
-fi
-if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$UPSTREAM_COUNT" ]; then
-  SAMPLE_USERS="$UPSTREAM_COUNT"
 fi
 
 VERIFY_PREFIX=${VERIFY_PREFIX:-verify_user}
@@ -139,7 +155,7 @@ fi
 unique=$(cut -d' ' -f2 "$ips1" | sort -u | wc -l | tr -d ' ')
 count=$(wc -l < "$ips1" | tr -d ' ')
 
-printf "mode=%s users=%s unique_ips=%s source=%s\n" "$MODE" "$count" "$unique" "$UPSTREAM_SOURCE"
+printf "routing=%s users=%s unique_ips=%s source=%s\n" "$ROUTING" "$count" "$unique" "$UPSTREAM_SOURCE"
 cat "$ips1"
 
 echo "ok"

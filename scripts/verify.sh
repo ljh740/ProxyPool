@@ -15,33 +15,125 @@ if [ -z "$squid_id" ]; then
   exit 1
 fi
 
-MODE=$(docker compose exec -T squid sh -c 'printf "%s" "${MODE:-shared}"')
-UPSTREAM_SOURCE=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py source)
-UPSTREAM_COUNT=$(docker compose exec -T squid python3 /opt/helper/upstream_pool.py count)
-EXCLUSIVE_FALLBACK=$(docker compose exec -T squid sh -c 'printf "%s" "${EXCLUSIVE_FALLBACK:-deny}"')
-CAP_PER_PORT=$(docker compose exec -T squid sh -c 'printf "%s" "${CAP_PER_PORT:-2}"')
+tmp_dir=$(mktemp -d)
+state_snapshot_file="$tmp_dir/proxy_list_snapshot.json"
+cleanup() {
+  local exit_code=$?
+  trap - EXIT
+  if [ -f "$state_snapshot_file" ]; then
+    if ! docker compose exec -T squid python3 -c '
+import json
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import STATE_KEY_PROXY_LIST, open_storage
+
+snapshot = json.load(sys.stdin)
+storage = open_storage()
+if snapshot.get("present"):
+    storage.set(STATE_KEY_PROXY_LIST, snapshot["raw"])
+else:
+    storage.delete(STATE_KEY_PROXY_LIST)
+' < "$state_snapshot_file"; then
+      echo "failed to restore proxy list snapshot" >&2
+      exit_code=1
+    fi
+  fi
+  rm -rf "$tmp_dir"
+  exit "$exit_code"
+}
+trap cleanup EXIT
+
+backup_current_proxy_list() {
+  docker compose exec -T squid python3 - <<'PY' > "$state_snapshot_file"
+import json
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import STATE_KEY_PROXY_LIST, open_storage
+
+storage = open_storage()
+raw = storage.get(STATE_KEY_PROXY_LIST)
+print(json.dumps({
+    "present": raw is not None,
+    "raw": raw or "",
+}))
+PY
+}
+
+seed_sample_proxy_list() {
+  docker compose exec -T squid python3 - <<'PY'
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import open_storage, save_proxy_list
+from upstream_pool import UpstreamEntry, UpstreamHop, compute_entry_key
+
+entries = []
+for offset in range(5):
+    port = 10001 + offset
+    hop = UpstreamHop(
+        scheme="http",
+        host=f"verify-{offset + 1}.example.com",
+        port=port,
+        username="",
+        password="",
+    )
+    hops = (hop,)
+    entries.append(
+        UpstreamEntry(
+            key=compute_entry_key(hops),
+            label=f"{hop.host}:{hop.port}",
+            hops=hops,
+            source_tag="verify",
+            in_random_pool=True,
+        )
+    )
+
+save_proxy_list(open_storage(), entries)
+print(len(entries))
+PY
+}
+
+read_runtime_json() {
+  docker compose exec -T squid python3 - <<'PY'
+import json
+import sys
+sys.path.insert(0, "/opt/helper")
+from persistence import load_proxy_list, open_storage
+
+storage = open_storage()
+entries = load_proxy_list(storage)
+print(json.dumps({
+    "routing": "shared",
+    "upstream_source": "admin",
+    "upstream_count": len(entries),
+}))
+PY
+}
+
+RUNTIME_JSON=$(read_runtime_json)
+ROUTING=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["routing"])')
+UPSTREAM_SOURCE=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_source"])')
+UPSTREAM_COUNT=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_count"])')
 
 if ! [[ "$UPSTREAM_COUNT" =~ ^[0-9]+$ ]] || [ "$UPSTREAM_COUNT" -le 0 ]; then
-  echo "invalid upstream count: $UPSTREAM_COUNT"
-  exit 1
+  backup_current_proxy_list
+  seeded_count=$(seed_sample_proxy_list)
+  echo "seeded temporary upstreams: $seeded_count"
+  RUNTIME_JSON=$(read_runtime_json)
+  ROUTING=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["routing"])')
+  UPSTREAM_SOURCE=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_source"])')
+  UPSTREAM_COUNT=$(printf "%s" "$RUNTIME_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upstream_count"])')
+  if ! [[ "$UPSTREAM_COUNT" =~ ^[0-9]+$ ]] || [ "$UPSTREAM_COUNT" -le 0 ]; then
+    echo "invalid upstream count after seeding: $UPSTREAM_COUNT"
+    exit 1
+  fi
 fi
 
 SAMPLE_USERS=${SAMPLE_USERS:-20}
 if [ "$SAMPLE_USERS" -lt 2 ]; then
   SAMPLE_USERS=2
 fi
-if [ "$MODE" = "exclusive" ] && [ "$SAMPLE_USERS" -gt "$UPSTREAM_COUNT" ]; then
-  SAMPLE_USERS="$UPSTREAM_COUNT"
-fi
 
 VERIFY_PREFIX=${VERIFY_PREFIX:-verify_user}
-VERIFY_TTL_SECONDS=${VERIFY_TTL_SECONDS:-120}
-
-tmp_dir=$(mktemp -d)
-cleanup() {
-  rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
 
 users_file="$tmp_dir/users.txt"
 ports1="$tmp_dir/ports1.txt"
@@ -54,11 +146,7 @@ while [ "$i" -le "$SAMPLE_USERS" ]; do
 done
 
 exec_router() {
-  if [ "$MODE" = "exclusive" ] || [ "$MODE" = "shared_capped" ]; then
-    docker compose exec -T -e TTL_SECONDS="$VERIFY_TTL_SECONDS" squid python3 /opt/helper/router.py
-  else
-    docker compose exec -T squid python3 /opt/helper/router.py
-  fi
+  docker compose exec -T squid python3 /opt/helper/router.py
 }
 
 run_router() {
@@ -88,33 +176,7 @@ if ! diff -q "$ports1" "$ports2" >/dev/null; then
   exit 1
 fi
 
-case "$MODE" in
-  shared)
-    unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=shared sample=$SAMPLE_USERS unique_targets=$unique source=$UPSTREAM_SOURCE"
-    ;;
-  exclusive)
-    dup=$(sort "$ports1" | uniq -d | head -n 1 || true)
-    if [ -n "$dup" ]; then
-      echo "exclusive check failed: duplicate upstream targets"
-      exit 1
-    fi
-    unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=exclusive sample=$SAMPLE_USERS unique_targets=$unique fallback=$EXCLUSIVE_FALLBACK source=$UPSTREAM_SOURCE"
-    ;;
-  shared_capped)
-    max=$(sort "$ports1" | uniq -c | awk '{if($1>max)max=$1}END{print max+0}')
-    if [ "$max" -gt "$CAP_PER_PORT" ]; then
-      echo "shared_capped check failed: cap exceeded"
-      exit 1
-    fi
-    unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
-    echo "mode=shared_capped sample=$SAMPLE_USERS cap=$CAP_PER_PORT unique_targets=$unique source=$UPSTREAM_SOURCE"
-    ;;
-  *)
-    echo "unknown mode: $MODE"
-    exit 1
-    ;;
-esac
+unique=$(sort -u "$ports1" | wc -l | tr -d ' ')
+echo "routing=$ROUTING sample=$SAMPLE_USERS unique_targets=$unique source=$UPSTREAM_SOURCE"
 
 echo "ok"

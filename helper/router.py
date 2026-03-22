@@ -2,11 +2,13 @@
 
 import hashlib
 import os
+import random
 import sys
+from typing import Mapping
 
-import redis
-
-from upstream_pool import env_int, load_upstream_pool_from_env
+from config_center import AppConfig, RUNTIME_CONFIG_FIELDS
+from persistence import open_storage
+from upstream_pool import UpstreamPool
 
 
 def normalize_username(raw):
@@ -17,55 +19,37 @@ def normalize_username(raw):
     return raw
 
 
+def _coerce_app_config(config: AppConfig | Mapping[str, object]) -> AppConfig:
+    if isinstance(config, AppConfig):
+        return config
+    return AppConfig.from_mapping(config)
+
+
 class Router:
-    def __init__(self):
-        self.mode = os.getenv("MODE", "shared").lower()
-        self.salt = os.getenv("SALT", "change-me")
-        self.exclusive_fallback = os.getenv("EXCLUSIVE_FALLBACK", "deny").lower()
-        self.ttl_seconds = env_int("TTL_SECONDS", 0)
-        self.cap_per_port = env_int("CAP_PER_PORT", 2)
-        self.redis_host = os.getenv("REDIS_HOST", "redis")
-        self.redis_port = env_int("REDIS_PORT", 6379)
-        self.debug_log_path = os.getenv("ROUTER_DEBUG_LOG", "")
-
-        self.upstream_pool = load_upstream_pool_from_env()
+    def __init__(
+        self,
+        config: AppConfig | Mapping[str, object] | None = None,
+        upstream_pool: UpstreamPool | None = None,
+    ):
+        """Initialise the router from the centralized runtime config."""
+        if upstream_pool is None:
+            raise ValueError("upstream_pool is required")
+        app_config = AppConfig.load() if config is None else _coerce_app_config(config)
+        self.salt = app_config.salt
+        self.debug_log_path = app_config.router_debug_log
+        self.upstream_pool = upstream_pool
         self.upstream_count = self.upstream_pool.count
+        self.storage = None
+        self.random_pool_prefix = app_config.random_pool_prefix
+        self._random_pool_keys = [
+            e.key for e in self.upstream_pool.entries if e.in_random_pool
+        ]
 
-        self.redis = None
-        if self.mode in ("exclusive", "shared_capped"):
-            self.redis = redis.Redis(
-                host=self.redis_host,
-                port=self.redis_port,
-                decode_responses=True,
-            )
-
-        self._shared_capped_lua = (
-            "local users_key = KEYS[1]\n"
-            "local bind_key = KEYS[2]\n"
-            "local username = ARGV[1]\n"
-            "local cap = tonumber(ARGV[2])\n"
-            "local ttl = tonumber(ARGV[3])\n"
-            "local entry_key = ARGV[4]\n"
-            "if redis.call('SISMEMBER', users_key, username) == 1 then\n"
-            "  redis.call('SET', bind_key, entry_key)\n"
-            "  if ttl > 0 then\n"
-            "    redis.call('EXPIRE', users_key, ttl)\n"
-            "    redis.call('EXPIRE', bind_key, ttl)\n"
-            "  end\n"
-            "  return 2\n"
-            "end\n"
-            "local count = redis.call('SCARD', users_key)\n"
-            "if count >= cap then\n"
-            "  return 0\n"
-            "end\n"
-            "redis.call('SADD', users_key, username)\n"
-            "redis.call('SET', bind_key, entry_key)\n"
-            "if ttl > 0 then\n"
-            "  redis.call('EXPIRE', users_key, ttl)\n"
-            "  redis.call('EXPIRE', bind_key, ttl)\n"
-            "end\n"
-            "return 1\n"
-        )
+    @classmethod
+    def from_config(cls, config_dict, proxy_entries):
+        """Build a Router from explicit config values and entry list."""
+        pool = UpstreamPool(source="admin", entries=list(proxy_entries))
+        return cls(config=config_dict, upstream_pool=pool)
 
     def _log(self, message):
         if not self.debug_log_path:
@@ -83,11 +67,6 @@ class Router:
     def _shared_key(self, username):
         return self.upstream_pool.entries[self._hash_idx(username)].key
 
-    def _iter_keys(self, username):
-        start = self._hash_idx(username)
-        for i in range(self.upstream_count):
-            yield self.upstream_pool.entries[(start + i) % self.upstream_count].key
-
     def get_entry(self, entry_key):
         if entry_key is None:
             return None
@@ -96,80 +75,37 @@ class Router:
     def route_entry(self, username):
         return self.get_entry(self.route(username))
 
-    def _exclusive_get_bound(self, username):
-        bind_key = f"bind:user:{username}"
-        entry_key = self.redis.get(bind_key)
-        if not entry_key:
-            return None
-        owner = self.redis.get(f"entry:{entry_key}")
-        if owner == username:
-            return entry_key
-        if owner is None:
-            self.redis.delete(bind_key)
-        return None
-
-    def _exclusive_key(self, username):
-        bound = self._exclusive_get_bound(username)
-        if bound is not None:
-            return bound
-
-        ttl = self.ttl_seconds if self.ttl_seconds > 0 else None
-        bind_key = f"bind:user:{username}"
-        for entry_key in self._iter_keys(username):
-            owner_key = f"entry:{entry_key}"
-            if self.redis.set(owner_key, username, nx=True, ex=ttl):
-                if ttl is None:
-                    self.redis.set(bind_key, entry_key)
-                else:
-                    self.redis.set(bind_key, entry_key, ex=ttl)
-                return entry_key
-        return None
-
-    def _shared_capped_key(self, username):
-        if self.cap_per_port <= 0:
-            return None
-
-        bind_key = f"bind:user:{username}"
-        bound = self.redis.get(bind_key)
-        if bound:
-            users_key = f"entry:{bound}:users"
-            if self.redis.sismember(users_key, username):
-                return bound
-            self.redis.delete(bind_key)
-
-        ttl = self.ttl_seconds if self.ttl_seconds > 0 else 0
-        for entry_key in self._iter_keys(username):
-            users_key = f"entry:{entry_key}:users"
-            result = self.redis.eval(
-                self._shared_capped_lua,
-                2,
-                users_key,
-                bind_key,
-                username,
-                str(self.cap_per_port),
-                str(ttl),
-                entry_key,
-            )
-            if result in (1, 2):
-                return entry_key
-        return None
-
     def route(self, username):
-        if self.mode == "shared":
-            return self._shared_key(username)
-        if self.mode == "exclusive":
-            entry_key = self._exclusive_key(username)
-            if entry_key is None and self.exclusive_fallback == "shared":
-                return self._shared_key(username)
-            return entry_key
-        if self.mode == "shared_capped":
-            return self._shared_capped_key(username)
-        return None
+        if self.upstream_count == 0:
+            return None
+        if self.upstream_pool.get(username) is not None:
+            return username
+        if self.random_pool_prefix and username.startswith(self.random_pool_prefix):
+            if not self._random_pool_keys:
+                return None
+            return random.choice(self._random_pool_keys)
+        return self._shared_key(username)
 
 
 def main():
     try:
-        router = Router()
+        bootstrap_config = AppConfig.from_bootstrap_env()
+        storage = open_storage(bootstrap_config.state_db_path)
+        runtime_config = AppConfig.load(storage=storage)
+        override_values = runtime_config.runtime_values()
+        for field in RUNTIME_CONFIG_FIELDS:
+            override = os.environ.get(field.env_key)
+            if override not in (None, ""):
+                override_values[field.env_key] = override
+        runtime_config = AppConfig.from_mapping(override_values)
+        from persistence import load_proxy_list
+
+        entries = load_proxy_list(storage)
+        router = Router(
+            config=runtime_config,
+            upstream_pool=UpstreamPool(source="admin", entries=list(entries)),
+        )
+        router.storage = storage
     except Exception as exc:
         print(f"ERR message=init_failed:{exc}")
         return

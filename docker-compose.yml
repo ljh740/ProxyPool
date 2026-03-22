@@ -5,33 +5,13 @@ services:
       dockerfile: squid/Dockerfile
     ports:
       - "3128:3128"
+      - "8077:8077"
+      - "127.0.0.1:33100-33199:33100-33199"
     volumes:
       - ./config:/opt/config:ro
+      - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      UPSTREAM_SCHEME: ${UPSTREAM_SCHEME:-http}
-      UPSTREAM_HOST: ${UPSTREAM_HOST:-proxy.example.com}
-      UP_USER: ${UP_USER:-foo}
-      UP_PASS: ${UP_PASS:-bar}
-      UPSTREAM_LIST_FILE: ${UPSTREAM_LIST_FILE:-}
-      UPSTREAM_LIST: ${UPSTREAM_LIST:-}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
-      UPSTREAM_CONNECT_RETRIES: ${UPSTREAM_CONNECT_RETRIES:-3}
-      REWRITE_LOOPBACK_TO_HOST: ${REWRITE_LOOPBACK_TO_HOST:-auto}
-      HOST_LOOPBACK_ADDRESS: ${HOST_LOOPBACK_ADDRESS:-host.docker.internal}
-      PORT_FIRST: ${PORT_FIRST:-10001}
-      PORT_LAST: ${PORT_LAST:-10100}
-      MODE: ${MODE:-shared}
-      SALT: ${SALT:-change-me}
-      EXCLUSIVE_FALLBACK: ${EXCLUSIVE_FALLBACK:-deny}
-      TTL_SECONDS: ${TTL_SECONDS:-0}
-      CAP_PER_PORT: ${CAP_PER_PORT:-2}
-      REDIS_HOST: ${REDIS_HOST:-redis}
-      REDIS_PORT: ${REDIS_PORT:-6379}
-      ROUTER_DEBUG_LOG: ${ROUTER_DEBUG_LOG:-}
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
+      STATE_DB_PATH: ${STATE_DB_PATH:-/data/proxypool.sqlite3}
+      WEB_PORT: ${WEB_PORT:-8077}

@@ -1,0 +1,67 @@
+<div class="pp-page-header">
+  <h2>{{ title }}</h2>
+</div>
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-body" style="padding:1.5rem;">
+        {% if error %}
+        <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="{{ action_url }}" onsubmit="setLoading(this.querySelector('.btn-primary'))">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label class="form-label" for="scheme">{{ i.proxy_form_scheme }}</label>
+            <select class="form-select" id="scheme" name="scheme">
+              {% for value in schemes %}
+              <option value="{{ value }}" {% if value == scheme %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="row mb-3">
+            <div class="col-12 col-sm">
+              <label class="form-label" for="host">{{ i.proxy_form_host }}</label>
+              <input type="text" class="form-control" id="host" name="host"
+                     value="{{ host }}" placeholder="{{ i.proxy_form_host_placeholder }}" required>
+            </div>
+            <div class="col-12 col-sm-auto" style="min-width:140px">
+              <label class="form-label" for="port">{{ i.proxy_form_port }}</label>
+              <input type="number" class="form-control" id="port" name="port"
+                     value="{{ port }}" min="1" max="65535" placeholder="{{ i.proxy_form_port_placeholder }}" required>
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-12 col-sm">
+              <label class="form-label" for="username">{{ i.proxy_form_username }}</label>
+              <input type="text" class="form-control" id="username" name="username"
+                     value="{{ username }}" placeholder="{{ i.proxy_form_optional }}">
+            </div>
+            <div class="col-12 col-sm">
+              <label class="form-label" for="password">{{ i.proxy_form_password }}</label>
+              <input type="text" class="form-control" id="password" name="password"
+                     value="{{ password }}" placeholder="{{ i.proxy_form_optional }}">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="prepend_hop">{{ i.proxy_form_prepend_hop }}</label>
+            <input type="text" class="form-control" id="prepend_hop" name="prepend_hop"
+                   value="{{ prepend_hop }}"
+                   placeholder="{{ i.proxy_form_prepend_placeholder }}">
+            <span class="form-hint">{{ i.proxy_form_prepend_hint }}</span>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="in_random_pool">{{ i.proxy_form_random_pool }}</label>
+            <select class="form-select" id="in_random_pool" name="in_random_pool">
+              <option value="1" {% if in_random_pool %}selected{% endif %}>{{ i.proxy_form_yes }}</option>
+              <option value="0" {% if not in_random_pool %}selected{% endif %}>{{ i.proxy_form_no }}</option>
+            </select>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><span class="pp-btn-text"><i class="ti ti-device-floppy me-1"></i>{{ submit_label }}</span></button>
+            <a href="/dashboard/proxies" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">{{ i.proxy_form_cancel }}</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

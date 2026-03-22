@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
-
-
-def env_int(name, default):
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
 
 
 def build_uri_line(scheme, host, port, username, password):
@@ -47,12 +36,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate line-based upstream proxy lists from one host + port range."
     )
-    parser.add_argument("--scheme", default=os.getenv("UPSTREAM_SCHEME", "http"))
-    parser.add_argument("--host", default=os.getenv("UPSTREAM_HOST", "proxy.example.com"))
-    parser.add_argument("--username", default=os.getenv("UP_USER", ""))
-    parser.add_argument("--password", default=os.getenv("UP_PASS", ""))
-    parser.add_argument("--port-first", type=int, default=env_int("PORT_FIRST", 10001))
-    parser.add_argument("--port-last", type=int, default=env_int("PORT_LAST", 10100))
+    parser.add_argument("--scheme", default="http")
+    parser.add_argument("--host", default="proxy.example.com")
+    parser.add_argument("--username", default="")
+    parser.add_argument("--password", default="")
+    parser.add_argument("--port-first", type=int, default=10001)
+    parser.add_argument("--port-last", type=int, default=10100)
     parser.add_argument(
         "--format",
         choices=("uri", "colon", "csv"),
@@ -94,9 +83,15 @@ def main():
         return 1
 
     builders = {
-        "uri": lambda port: build_uri_line(args.scheme, args.host, port, args.username, args.password),
-        "colon": lambda port: build_colon_line(args.host, port, args.username, args.password),
-        "csv": lambda port: build_csv_line(args.scheme, args.host, port, args.username, args.password),
+        "uri": lambda port: build_uri_line(
+            args.scheme, args.host, port, args.username, args.password
+        ),
+        "colon": lambda port: build_colon_line(
+            args.host, port, args.username, args.password
+        ),
+        "csv": lambda port: build_csv_line(
+            args.scheme, args.host, port, args.username, args.password
+        ),
     }
 
     static_hops = [value.strip() for value in args.prepend_hop if value.strip()]

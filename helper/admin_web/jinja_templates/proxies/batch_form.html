@@ -1,0 +1,73 @@
+<div class="pp-page-header">
+  <h2>{{ i.batch_title }}</h2>
+</div>
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-body" style="padding:1.5rem;">
+        {% if error %}
+        <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/dashboard/proxies/batch/generate" onsubmit="setLoading(this.querySelector('.btn-primary'))">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label class="form-label" for="scheme">{{ i.batch_scheme }}</label>
+            <select class="form-select" id="scheme" name="scheme">
+              {% for value in schemes %}
+              <option value="{{ value }}" {% if value == scheme %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="host">{{ i.batch_host }}</label>
+            <input type="text" class="form-control" id="host" name="host"
+                   value="{{ host }}" placeholder="{{ i.batch_host_placeholder }}" required>
+          </div>
+          <div class="row mb-3">
+            <div class="col-12 col-sm">
+              <label class="form-label" for="username">{{ i.batch_username }}</label>
+              <input type="text" class="form-control" id="username" name="username"
+                     value="{{ username }}" placeholder="{{ i.batch_optional }}">
+            </div>
+            <div class="col-12 col-sm">
+              <label class="form-label" for="password">{{ i.batch_password }}</label>
+              <input type="text" class="form-control" id="password" name="password"
+                     value="{{ password }}" placeholder="{{ i.batch_optional }}">
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-12 col-sm">
+              <label class="form-label" for="port_first">{{ i.batch_port_first }}</label>
+              <input type="number" class="form-control" id="port_first" name="port_first"
+                     value="{{ port_first }}" min="1" max="65535" required>
+            </div>
+            <div class="col-12 col-sm">
+              <label class="form-label" for="port_last">{{ i.batch_port_last }}</label>
+              <input type="number" class="form-control" id="port_last" name="port_last"
+                     value="{{ port_last }}" min="1" max="65535" required>
+            </div>
+          </div>
+          <span class="form-hint mb-3 d-block">{{ i.batch_max_range }}</span>
+          <div class="mb-3">
+            <label class="form-label" for="prepend_hop">{{ i.batch_prepend_hop }}</label>
+            <input type="text" class="form-control" id="prepend_hop" name="prepend_hop"
+                   value="{{ prepend_hop }}"
+                   placeholder="{{ i.batch_prepend_placeholder }}">
+            <span class="form-hint">{{ i.batch_prepend_hint }}</span>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="cycle_first_hop">{{ i.batch_cycle_hop }}</label>
+            <input type="text" class="form-control" id="cycle_first_hop" name="cycle_first_hop"
+                   value="{{ cycle_first_hop }}"
+                   placeholder="{{ i.batch_cycle_placeholder }}">
+            <span class="form-hint">{{ i.batch_cycle_hint }}</span>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><span class="pp-btn-text"><i class="ti ti-bolt me-1"></i>{{ i.batch_generate_btn }}</span></button>
+            <a href="/dashboard/proxies" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">{{ i.batch_cancel }}</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

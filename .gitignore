@@ -2,7 +2,13 @@
 .env
 .env.*
 !.env.example
+data/
 router-debug*.log
 __pycache__/
 config/*.txt
 !config/upstreams.example.txt
+.workflow
+.mcp.json
+.ccw
+.claude
+.DS_Store

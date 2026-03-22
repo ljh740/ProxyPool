@@ -1,42 +1,20 @@
+import importlib
 import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 HELPER_DIR = os.path.join(ROOT, "helper")
 if HELPER_DIR not in sys.path:
     sys.path.insert(0, HELPER_DIR)
 
-from upstream_pool import (
-    build_range_pool,
-    load_upstream_pool_from_env,
-    parse_upstream_line,
-)
+upstream_pool = importlib.import_module("upstream_pool")
+
+parse_upstream_line = upstream_pool.parse_upstream_line
+build_list_entries = upstream_pool.build_list_entries
 
 
 class UpstreamPoolTests(unittest.TestCase):
-    def test_build_range_pool_uses_port_range(self):
-        with patch.dict(
-            os.environ,
-            {
-                "UPSTREAM_SCHEME": "socks5",
-                "UPSTREAM_HOST": "dc.decodo.com",
-                "UP_USER": "user",
-                "UP_PASS": "pass",
-                "PORT_FIRST": "10001",
-                "PORT_LAST": "10003",
-            },
-            clear=False,
-        ):
-            pool = build_range_pool()
-
-        self.assertEqual(pool.source, "range")
-        self.assertEqual(pool.count, 3)
-        self.assertEqual(pool.entries[0].key, "10001")
-        self.assertEqual(pool.entries[-1].first_hop.port, 10003)
-
     def test_parse_upstream_line_supports_uri(self):
         entry = parse_upstream_line(
             "socks5://user:pass@dc.decodo.com:10001",
@@ -61,7 +39,7 @@ class UpstreamPoolTests(unittest.TestCase):
             "",
         )
         self.assertEqual(entry.first_hop.scheme, "socks5")
-        self.assertEqual(entry.key, "upstream_2")
+        self.assertEqual(entry.key, upstream_pool.compute_entry_key(entry.hops))
         self.assertEqual(entry.first_hop.password, "pass")
 
     def test_parse_upstream_line_supports_chain_mode(self):
@@ -112,51 +90,48 @@ class UpstreamPoolTests(unittest.TestCase):
         self.assertEqual(entry.first_hop.username, "default-user")
         self.assertEqual(entry.first_hop.password, "pass")
 
-    def test_load_upstream_pool_from_file(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "upstreams.txt")
-            with open(file_path, "w", encoding="utf-8") as handle:
-                handle.write("# comment\n")
-                handle.write(
-                    "http://127.0.0.1:30001 | socks5://u1:p1@dc.decodo.com:10001\n"
-                )
-                handle.write("dc.decodo.com:10002:u2:p2\n")
+    def test_build_list_entries_supports_comments_and_multiple_formats(self):
+        entries = build_list_entries(
+            [
+                "# comment",
+                "http://127.0.0.1:30001 | socks5://u1:p1@dc.decodo.com:10001",
+                "dc.decodo.com:10002:u2:p2",
+            ],
+            "socks5",
+            "",
+            "",
+        )
 
-            with patch.dict(
-                os.environ,
-                {
-                    "UPSTREAM_LIST_FILE": file_path,
-                    "UPSTREAM_SCHEME": "socks5",
-                },
-                clear=False,
-            ):
-                pool = load_upstream_pool_from_env()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0].chain_length, 2)
+        self.assertEqual(entries[1].first_hop.port, 10002)
 
-        self.assertEqual(pool.source, "file")
-        self.assertEqual(pool.count, 2)
-        self.assertEqual(pool.entries[0].chain_length, 2)
-        self.assertEqual(pool.entries[1].first_hop.port, 10002)
+    def test_compute_entry_key_changes_when_credentials_change(self):
+        hop_a = upstream_pool.UpstreamHop("socks5", "proxy.example.com", 10001, "user-a", "pass")
+        hop_b = upstream_pool.UpstreamHop("socks5", "proxy.example.com", 10001, "user-b", "pass")
 
-    def test_load_upstream_pool_from_inline_text(self):
-        with patch.dict(
-            os.environ,
-            {
-                "UPSTREAM_LIST_FILE": "",
-                "UPSTREAM_LIST": "dc.decodo.com:10001\ndc.decodo.com:10002:user2:pass2\n",
-                "UPSTREAM_SCHEME": "socks5",
-                "UP_USER": "default-user",
-                "UP_PASS": "default-pass",
-            },
-            clear=False,
-        ):
-            pool = load_upstream_pool_from_env()
+        self.assertNotEqual(
+            upstream_pool.compute_entry_key((hop_a,)),
+            upstream_pool.compute_entry_key((hop_b,)),
+        )
 
-        self.assertEqual(pool.source, "inline")
-        self.assertEqual(pool.count, 2)
-        self.assertEqual(pool.entries[0].first_hop.username, "default-user")
-        self.assertEqual(pool.entries[0].first_hop.password, "default-pass")
-        self.assertEqual(pool.entries[1].first_hop.username, "user2")
-        self.assertEqual(pool.entries[1].first_hop.password, "pass2")
+    def test_build_list_entries_keep_same_key_after_reordering(self):
+        first = parse_upstream_line(
+            "dc.decodo.com:10001:user-a:pass-a",
+            0,
+            "socks5",
+            "",
+            "",
+        )
+        second = parse_upstream_line(
+            "dc.decodo.com:10001:user-a:pass-a",
+            5,
+            "socks5",
+            "",
+            "",
+        )
+
+        self.assertEqual(first.key, second.key)
 
 
 if __name__ == "__main__":
