@@ -118,6 +118,38 @@ Notes:
 - If an `entry_key` mapping points to an entry that is later removed, requests on that compatibility port will fail until you update the mapping.
 - `session_name` is not a unique per-entry access key. The unique direct-access identifier is `entry_key`.
 
+### Public API Site
+The project now exposes a public `/api` documentation site for humans and AI agents that read docs and then generate scripts:
+
+- `GET /api`
+  - HTML documentation page for people
+- `GET /api.txt`
+  - plain-text documentation for LLMs and script generators
+- `GET /api.json`
+  - compact machine-readable description
+- `GET /api/openapi.json`
+  - OpenAPI document
+
+The actual callable endpoints live under `/api/v1`:
+
+- `GET /api/v1/health`
+- `GET /api/v1/resolve?username=<name>`
+- `GET /api/v1/resolve?entry_key=<key>`
+- `GET /api/v1/resolve?listen_port=<port>`
+- `GET /api/v1/entries`
+- `GET /api/v1/compat/mappings`
+- `POST /api/v1/compat/bind`
+- `POST /api/v1/compat/allocate`
+- `POST /api/v1/compat/unbind`
+
+These endpoints are unauthenticated by design, which makes them convenient for local or trusted-network automation. Returned payloads do not expose the stored real passwords directly.
+
+Examples:
+- `curl 'http://127.0.0.1:8077/api'`
+- `curl 'http://127.0.0.1:8077/api/v1/resolve?username=browser-a'`
+- `curl -H 'Content-Type: application/json' -d '{"username":"browser-a"}' http://127.0.0.1:8077/api/v1/compat/bind`
+- `curl -X POST http://127.0.0.1:8077/api/v1/compat/allocate`
+
 ### Manual Add/Edit
 You can add a single proxy entry with:
 - scheme

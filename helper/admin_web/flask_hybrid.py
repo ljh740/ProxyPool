@@ -7,6 +7,7 @@ from flask import Blueprint, Flask, redirect, request, send_from_directory
 from flask_wtf.csrf import CSRFProtect
 
 from .app_runtime import AdminRouteRuntime
+from .routes.api import register_public_api_routes
 from .routes.auth import register_auth_routes
 from .routes.compat import register_compat_routes
 from .routes.config import register_config_routes
@@ -47,7 +48,7 @@ def build_admin_app(
         SESSION_COOKIE_SAMESITE="Strict",
     )
     flask_app.secret_key = secret_key
-    CSRFProtect(flask_app)
+    csrf = CSRFProtect(flask_app)
     runtime = AdminRouteRuntime(
         get_storage=get_storage,
         secret_key=secret_key,
@@ -91,6 +92,7 @@ def build_admin_app(
     def static_files(filepath):
         return send_from_directory(_PUBLIC_STATIC_ROOT, filepath)
 
+    register_public_api_routes(blueprint, runtime, csrf=csrf)
     register_auth_routes(blueprint, runtime)
     register_dashboard_routes(blueprint, runtime)
     register_config_routes(blueprint, runtime)

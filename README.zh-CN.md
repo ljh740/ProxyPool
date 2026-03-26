@@ -122,6 +122,38 @@
 - 如果某个 `entry_key` 映射对应的上游记录后来被删除，那么该兼容端口上的请求会失败，直到你更新映射。
 - `session_name` 不是每条代理独占的唯一访问 key；真正的唯一直接访问标识是 `entry_key`。
 
+### 公共 API 站点
+现在提供一个公开的 `/api` 文档站，面向人工阅读和 AI agent 读文档后生成脚本：
+
+- `GET /api`
+  - HTML 文档页，适合人工浏览
+- `GET /api.txt`
+  - 纯文本版，适合 LLM / agent 抓取
+- `GET /api.json`
+  - 紧凑机器可读描述
+- `GET /api/openapi.json`
+  - OpenAPI 文档
+
+真正的调用入口在 `/api/v1`：
+
+- `GET /api/v1/health`
+- `GET /api/v1/resolve?username=<name>`
+- `GET /api/v1/resolve?entry_key=<key>`
+- `GET /api/v1/resolve?listen_port=<port>`
+- `GET /api/v1/entries`
+- `GET /api/v1/compat/mappings`
+- `POST /api/v1/compat/bind`
+- `POST /api/v1/compat/allocate`
+- `POST /api/v1/compat/unbind`
+
+这组 API 默认不做鉴权，适合本地或内网自动化调用；同时返回的数据默认不直接暴露已存储的真实密码。
+
+示例：
+- `curl 'http://127.0.0.1:8077/api'`
+- `curl 'http://127.0.0.1:8077/api/v1/resolve?username=browser-a'`
+- `curl -H 'Content-Type: application/json' -d '{"username":"browser-a"}' http://127.0.0.1:8077/api/v1/compat/bind`
+- `curl -X POST http://127.0.0.1:8077/api/v1/compat/allocate`
+
 ### 手动新增/编辑
 单条代理记录支持以下字段：
 - scheme

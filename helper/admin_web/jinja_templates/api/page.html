@@ -1,0 +1,123 @@
+<div class="container-xl py-4">
+  <div class="card">
+    <div class="card-body">
+      <h1 class="mb-3">{{ spec.title }}</h1>
+      <p class="text-secondary mb-3">
+        Version <code>{{ spec.version }}</code>. This site is designed for humans and AI agents that read docs and then generate scripts.
+      </p>
+      <div class="alert alert-warning" role="alert">
+        {{ spec.warning }}
+      </div>
+      <div class="mb-3">
+        <strong>Formats</strong>
+        <ul class="mb-0">
+          <li><code>{{ spec.docs_url }}</code> — HTML documentation</li>
+          <li><code>{{ spec.text_url }}</code> — plain text for LLMs and script generators</li>
+          <li><code>{{ spec.json_url }}</code> — compact machine-readable description</li>
+          <li><code>{{ spec.openapi_url }}</code> — OpenAPI document</li>
+        </ul>
+      </div>
+      <div>
+        <strong>Compatibility port range</strong>
+        <div><code>{{ spec.compat_port_range.min }}-{{ spec.compat_port_range.max }}</code></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-body">
+      <h2 class="mb-3">Common Tasks</h2>
+      {% for task in spec.tasks %}
+      <div class="mb-4">
+        <h3 class="h5">{{ task.title }}</h3>
+        <p class="text-secondary">{{ task.description }}</p>
+        <ol class="mb-0">
+          {% for step in task.steps %}
+          <li>{{ step }}</li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% for endpoint in spec.endpoints %}
+  <div class="card mt-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <span class="badge bg-blue-lt">{{ endpoint.method }}</span>
+        <code>{{ endpoint.path }}</code>
+      </div>
+      <h2 class="h4 mb-2">{{ endpoint.summary }}</h2>
+      <p class="text-secondary">{{ endpoint.description }}</p>
+
+      {% if endpoint.query_params %}
+      <h3 class="h6 mt-4">Query Parameters</h3>
+      <div class="table-responsive">
+        <table class="table table-sm table-vcenter">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Required</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for param in endpoint.query_params %}
+            <tr>
+              <td><code>{{ param.name }}</code></td>
+              <td>{{ param.type }}</td>
+              <td>{{ "yes" if param.required else "no" }}</td>
+              <td>{{ param.description }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      {% if endpoint.json_body %}
+      <h3 class="h6 mt-4">JSON Body</h3>
+      <div class="mb-2 text-secondary">{{ endpoint.json_body.required_rule }}</div>
+      <div class="table-responsive">
+        <table class="table table-sm table-vcenter">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for key, value in endpoint.json_body.properties.items() %}
+            <tr>
+              <td><code>{{ key }}</code></td>
+              <td>{{ value }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      {% if endpoint.errors %}
+      <h3 class="h6 mt-4">Errors</h3>
+      <ul>
+        {% for error in endpoint.errors %}
+        <li><code>{{ error.code }}</code> — {{ error.message }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      <h3 class="h6 mt-4">curl</h3>
+      <pre class="bg-body-secondary p-3 rounded"><code>{{ endpoint.curl_example }}</code></pre>
+
+      <h3 class="h6 mt-4">Python</h3>
+      <pre class="bg-body-secondary p-3 rounded"><code>{{ endpoint.python_example }}</code></pre>
+
+      <h3 class="h6 mt-4">Example Response</h3>
+      <pre class="bg-body-secondary p-3 rounded"><code>{{ endpoint.response_example | tojson(indent=2) }}</code></pre>
+    </div>
+  </div>
+  {% endfor %}
+</div>

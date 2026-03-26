@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 import os
 import sys
@@ -42,7 +43,6 @@ load_compat_port_mappings = persistence.load_compat_port_mappings
 
 
 class _MemoryStorage:
-
     def __init__(self):
         self._values = {}
 
@@ -60,11 +60,13 @@ class _MemoryStorage:
 
 
 class TestWebAdmin(unittest.TestCase):
-
     def test_compute_entry_key(self):
         hop = UpstreamHop(
-            scheme="socks5", host="dc.decodo.com", port=10001,
-            username="user", password="pass",
+            scheme="socks5",
+            host="dc.decodo.com",
+            port=10001,
+            username="user",
+            password="pass",
         )
         key = compute_entry_key((hop,))
         # Key should be a 12-char hex string derived from md5
@@ -77,8 +79,11 @@ class TestWebAdmin(unittest.TestCase):
 
         # Different hops should produce a different key
         hop2 = UpstreamHop(
-            scheme="http", host="other.com", port=8080,
-            username="", password="",
+            scheme="http",
+            host="other.com",
+            port=8080,
+            username="",
+            password="",
         )
         key3 = compute_entry_key((hop2,))
         self.assertNotEqual(key, key3)
@@ -87,13 +92,18 @@ class TestWebAdmin(unittest.TestCase):
         hop = UpstreamHop("http", "example.com", 8080, "", "")
         # Default source_tag should be 'manual'
         entry_default = UpstreamEntry(
-            key="e1", label="test", hops=(hop,),
+            key="e1",
+            label="test",
+            hops=(hop,),
         )
         self.assertEqual(entry_default.source_tag, "manual")
 
         # Explicit source_tag='auto'
         entry_auto = UpstreamEntry(
-            key="e2", label="test", hops=(hop,), source_tag="auto",
+            key="e2",
+            label="test",
+            hops=(hop,),
+            source_tag="auto",
         )
         self.assertEqual(entry_auto.source_tag, "auto")
 
@@ -101,13 +111,18 @@ class TestWebAdmin(unittest.TestCase):
         hop = UpstreamHop("http", "example.com", 8080, "", "")
         # Default in_random_pool should be True
         entry_default = UpstreamEntry(
-            key="e1", label="test", hops=(hop,),
+            key="e1",
+            label="test",
+            hops=(hop,),
         )
         self.assertTrue(entry_default.in_random_pool)
 
         # Explicit in_random_pool=False
         entry_excluded = UpstreamEntry(
-            key="e2", label="test", hops=(hop,), in_random_pool=False,
+            key="e2",
+            label="test",
+            hops=(hop,),
+            in_random_pool=False,
         )
         self.assertFalse(entry_excluded.in_random_pool)
 
@@ -247,16 +262,22 @@ def _make_test_storage():
 
 def _make_hop(host="proxy.example.com", port=10001, scheme="socks5"):
     return UpstreamHop(
-        scheme=scheme, host=host, port=port,
-        username="user", password="pass",
+        scheme=scheme,
+        host=host,
+        port=port,
+        username="user",
+        password="pass",
     )
 
 
 def _make_entry(key="test_1", host="proxy.example.com", port=10001):
     hop = _make_hop(host=host, port=port)
     return UpstreamEntry(
-        key=key, label="test", hops=(hop,),
-        source_tag="manual", in_random_pool=True,
+        key=key,
+        label="test",
+        hops=(hop,),
+        source_tag="manual",
+        in_random_pool=True,
     )
 
 
@@ -267,10 +288,14 @@ def _make_server_ref(config=None, router=None):
         ref.config = config
     else:
         ref.config = ProxyConfig(
-            listen_host="0.0.0.0", listen_port=3128,
-            auth_password="old-secret", auth_realm="Proxy",
-            connect_timeout=20.0, connect_retries=3,
-            relay_timeout=120.0, loopback_host_mode="auto",
+            listen_host="0.0.0.0",
+            listen_port=3128,
+            auth_password="old-secret",
+            auth_realm="Proxy",
+            connect_timeout=20.0,
+            connect_retries=3,
+            relay_timeout=120.0,
+            loopback_host_mode="auto",
             host_loopback_address="host.docker.internal",
             running_in_docker=False,
         )
@@ -283,7 +308,6 @@ def _make_server_ref(config=None, router=None):
 
 
 class _ProxyTablePlacementParser(HTMLParser):
-
     def __init__(self):
         super().__init__()
         self.stack = []
@@ -296,8 +320,7 @@ class _ProxyTablePlacementParser(HTMLParser):
         if tag == "table" and "pp-proxy-table" in classes:
             self.saw_proxy_table = True
             self.proxy_table_inside_content = any(
-                ancestor["tag"] == "div" and "pp-content" in ancestor["classes"]
-                for ancestor in self.stack
+                ancestor["tag"] == "div" and "pp-content" in ancestor["classes"] for ancestor in self.stack
             )
         self.stack.append({"tag": tag, "classes": classes})
 
@@ -309,7 +332,6 @@ class _ProxyTablePlacementParser(HTMLParser):
 
 
 class TestProxyFormHelpers(unittest.TestCase):
-
     def test_prepend_hop_value_serializes_all_but_last_hop(self):
         hops = (
             UpstreamHop("socks5", "gate-1.example.com", 1080, "", ""),
@@ -326,7 +348,6 @@ class TestProxyFormHelpers(unittest.TestCase):
 
 
 class TestAdminAuthHelpers(unittest.TestCase):
-
     def test_signed_cookie_roundtrip(self):
         headers = admin_auth.build_signed_cookie_headers(
             "admin_session",
@@ -368,7 +389,6 @@ class TestAdminAuthHelpers(unittest.TestCase):
 
 
 class TestAdminThemeStyles(unittest.TestCase):
-
     def test_tabler_page_includes_centered_layout_and_dark_theme_overrides(self):
         html = web_admin._tabler_page(
             "Admin",
@@ -388,7 +408,7 @@ class TestAdminThemeStyles(unittest.TestCase):
         self.assertIn("margin: 0 auto;", html)
         self.assertIn(".pp-proxy-toolbar {", html)
         self.assertIn(".pp-proxy-summary-item {", html)
-        self.assertIn('--tblr-table-striped-bg: var(--pp-table-row-alt);', html)
+        self.assertIn("--tblr-table-striped-bg: var(--pp-table-row-alt);", html)
         self.assertIn('html.setAttribute("data-bs-theme",next);', html)
 
     def test_toggle_locale_url_preserves_current_query_params(self):
@@ -479,11 +499,14 @@ class TestTriggerReload(unittest.TestCase):
         storage = _make_test_storage()
         entries = [_make_entry("e1"), _make_entry("e2", port=10002)]
         save_proxy_list(storage, entries)
-        save_config(storage, {
-            "AUTH_PASSWORD": "new-secret",
-            "RELAY_TIMEOUT": "60.0",
-            "UPSTREAM_CONNECT_TIMEOUT": "5.0",
-        })
+        save_config(
+            storage,
+            {
+                "AUTH_PASSWORD": "new-secret",
+                "RELAY_TIMEOUT": "60.0",
+                "UPSTREAM_CONNECT_TIMEOUT": "5.0",
+            },
+        )
 
         server_ref = _make_server_ref()
         server_ref.router.storage = storage
@@ -602,6 +625,238 @@ class TestTriggerReload(unittest.TestCase):
         )
 
 
+class TestPublicApiRoutes(unittest.TestCase):
+    def setUp(self):
+        self.storage = _make_test_storage()
+        save_config(
+            self.storage,
+            {
+                "ADMIN_PASSWORD": "panel-admin",
+                "AUTH_PASSWORD": "proxy-secret",
+                "SALT": "stable-salt",
+                "PROXY_HOST": "127.0.0.1",
+                "PROXY_PORT": "3128",
+            },
+        )
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry("e1", "host1.example.com", 10001),
+                _make_entry("e2", "host2.example.com", 10002),
+            ],
+        )
+        self.reload_calls = []
+        self.app = web_admin.build_admin_app(
+            get_storage=lambda: self.storage,
+            secret_key="test-secret",
+            cookie_name=web_admin._COOKIE_NAME,
+            cookie_value=web_admin._COOKIE_VALUE,
+            cookie_max_age=web_admin._COOKIE_MAX_AGE,
+            theme_cookie_name=web_admin._THEME_COOKIE_NAME,
+            theme_cookie_max_age=web_admin._THEME_COOKIE_MAX_AGE,
+            trigger_reload_callback=lambda **kwargs: self.reload_calls.append(kwargs),
+            proxies_per_page=web_admin._PROXIES_PER_PAGE,
+        )
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    @staticmethod
+    def _payload(response):
+        return json.loads(response.data)
+
+    def test_api_docs_surfaces_are_public(self):
+        html_response = self.client.get("/api")
+        text_response = self.client.get("/api.txt")
+        json_response = self.client.get("/api.json")
+        openapi_response = self.client.get("/api/openapi.json")
+
+        self.assertEqual(html_response.status_code, 200)
+        self.assertIn("ProxyPool Public API", html_response.get_data(as_text=True))
+        self.assertIn("/api/v1/resolve", html_response.get_data(as_text=True))
+
+        self.assertEqual(text_response.status_code, 200)
+        self.assertIn("GET /api/v1/resolve", text_response.get_data(as_text=True))
+
+        json_payload = self._payload(json_response)
+        self.assertEqual(json_response.status_code, 200)
+        self.assertEqual(json_payload["title"], "ProxyPool Public API")
+        self.assertTrue(any(item["path"] == "/api/v1/compat/bind" for item in json_payload["endpoints"]))
+
+        openapi_payload = self._payload(openapi_response)
+        self.assertEqual(openapi_response.status_code, 200)
+        self.assertIn("/api/v1/compat/allocate", openapi_payload["paths"])
+
+    def test_resolve_username_is_public(self):
+        response = self.client.get(
+            "/api/v1/resolve",
+            query_string={"username": "browser-a"},
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["query"]["type"], "username")
+        self.assertEqual(payload["data"]["query"]["value"], "browser-a")
+        self.assertEqual(
+            payload["data"]["access"]["http_proxy"],
+            "http://browser-a:<AUTH_PASSWORD>@127.0.0.1:3128",
+        )
+
+    def test_resolve_username_prefers_forwarded_host_for_wildcard_listener(self):
+        config = load_config(self.storage)
+        config["PROXY_HOST"] = "0.0.0.0"
+        save_config(self.storage, config)
+
+        response = self.client.get(
+            "/api/v1/resolve",
+            query_string={"username": "browser-a"},
+            headers={
+                "Host": "internal-proxy:8077",
+                "X-Forwarded-Host": "proxybox.lan:9443, edge-gateway.local",
+            },
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["access"]["connect_host"], "proxybox.lan")
+        self.assertEqual(
+            payload["data"]["access"]["http_proxy"],
+            "http://browser-a:<AUTH_PASSWORD>@proxybox.lan:3128",
+        )
+
+    def test_resolve_username_returns_stable_shared_entry(self):
+        first = self.client.get(
+            "/api/v1/resolve",
+            query_string={"username": "browser-a"},
+        )
+        second = self.client.get(
+            "/api/v1/resolve",
+            query_string={"username": "browser-a"},
+        )
+
+        first_payload = self._payload(first)
+        second_payload = self._payload(second)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(
+            first_payload["data"]["resolved_entry"]["entry_key"],
+            second_payload["data"]["resolved_entry"]["entry_key"],
+        )
+        self.assertIn(first_payload["data"]["resolved_entry"]["entry_key"], {"e1", "e2"})
+
+    def test_bind_endpoint_allocates_port_and_is_idempotent(self):
+        response = self.client.post(
+            "/api/v1/compat/bind",
+            json={"username": "browser-a", "note": "qa"},
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["data"]["created"])
+        self.assertEqual(payload["data"]["mapping"]["listen_port"], compat_ports.COMPAT_PORT_MIN)
+        self.assertEqual(
+            payload["data"]["mapping"]["target_type"],
+            compat_ports.TARGET_TYPE_SESSION_NAME,
+        )
+        self.assertEqual(
+            payload["data"]["mapping"]["access"]["http_proxy"],
+            "http://127.0.0.1:33100",
+        )
+        self.assertEqual(len(load_compat_port_mappings(self.storage)), 1)
+        self.assertEqual(len(self.reload_calls), 1)
+
+        repeat = self.client.post(
+            "/api/v1/compat/bind",
+            json={"username": "browser-a"},
+        )
+
+        repeat_payload = self._payload(repeat)
+        self.assertEqual(repeat.status_code, 200)
+        self.assertFalse(repeat_payload["data"]["created"])
+        self.assertEqual(
+            repeat_payload["data"]["mapping"]["listen_port"],
+            compat_ports.COMPAT_PORT_MIN,
+        )
+        self.assertEqual(len(load_compat_port_mappings(self.storage)), 1)
+        self.assertEqual(len(self.reload_calls), 1)
+
+    def test_entries_and_mappings_lists_are_public(self):
+        bind = self.client.post(
+            "/api/v1/compat/bind",
+            json={"username": "browser-a"},
+        )
+        self.assertEqual(bind.status_code, 201)
+
+        entries = self.client.get("/api/v1/entries")
+        mappings = self.client.get("/api/v1/compat/mappings")
+
+        entries_payload = self._payload(entries)
+        mappings_payload = self._payload(mappings)
+        self.assertEqual(entries.status_code, 200)
+        self.assertEqual(entries_payload["data"]["count"], 2)
+        self.assertTrue(any(item["entry_key"] == "e1" for item in entries_payload["data"]["items"]))
+
+        self.assertEqual(mappings.status_code, 200)
+        self.assertEqual(mappings_payload["data"]["count"], 1)
+        self.assertEqual(
+            mappings_payload["data"]["items"][0]["mapping"]["access"]["http_proxy"],
+            "http://127.0.0.1:33100",
+        )
+
+    def test_allocate_and_unbind_cycle(self):
+        first = self.client.post(
+            "/api/v1/compat/allocate",
+        )
+        second = self.client.post(
+            "/api/v1/compat/allocate",
+        )
+
+        first_payload = self._payload(first)
+        second_payload = self._payload(second)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first_payload["data"]["resolved_entry"]["entry_key"], "e1")
+        self.assertEqual(second_payload["data"]["resolved_entry"]["entry_key"], "e2")
+        self.assertEqual(
+            first_payload["data"]["mapping"]["listen_port"],
+            compat_ports.COMPAT_PORT_MIN,
+        )
+        self.assertEqual(
+            second_payload["data"]["mapping"]["listen_port"],
+            compat_ports.COMPAT_PORT_MIN + 1,
+        )
+        self.assertEqual(
+            first_payload["data"]["mapping"]["target_type"],
+            compat_ports.TARGET_TYPE_ENTRY_KEY,
+        )
+
+        resolve = self.client.get(
+            "/api/v1/resolve",
+            query_string={"listen_port": compat_ports.COMPAT_PORT_MIN},
+        )
+        resolve_payload = self._payload(resolve)
+        self.assertEqual(resolve.status_code, 200)
+        self.assertEqual(resolve_payload["data"]["resolved_entry"]["entry_key"], "e1")
+
+        unbind = self.client.post(
+            "/api/v1/compat/unbind",
+            json={"listen_port": compat_ports.COMPAT_PORT_MIN},
+        )
+
+        unbind_payload = self._payload(unbind)
+        self.assertEqual(unbind.status_code, 200)
+        self.assertTrue(unbind_payload["data"]["deleted"])
+        self.assertEqual(
+            unbind_payload["data"]["mapping"]["listen_port"],
+            compat_ports.COMPAT_PORT_MIN,
+        )
+        remaining = load_compat_port_mappings(self.storage)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].listen_port, compat_ports.COMPAT_PORT_MIN + 1)
+        self.assertEqual(len(self.reload_calls), 3)
+
+
 class TestConfigSaveReloadRoundtrip(unittest.TestCase):
     """Tests for the config save -> load -> reload cycle."""
 
@@ -643,11 +898,14 @@ class TestConfigSaveReloadRoundtrip(unittest.TestCase):
         storage = _make_test_storage()
 
         # Save runtime config
-        save_config(storage, {
-            "AUTH_PASSWORD": "cycle-secret",
-            "RANDOM_POOL_PREFIX": "rnd_",
-            "RELAY_TIMEOUT": "30.0",
-        })
+        save_config(
+            storage,
+            {
+                "AUTH_PASSWORD": "cycle-secret",
+                "RANDOM_POOL_PREFIX": "rnd_",
+                "RELAY_TIMEOUT": "30.0",
+            },
+        )
 
         # Save proxy entries
         entries = [_make_entry("e1"), _make_entry("e2", port=10002)]

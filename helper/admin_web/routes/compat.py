@@ -1,15 +1,14 @@
 """Compatibility-port routes for the admin Flask app."""
 
-from flask import render_template, request
-
 from compat_ports import (
     COMPAT_PORT_MAX,
     COMPAT_PORT_MIN,
-    CompatPortMapping,
     TARGET_TYPE_ENTRY_KEY,
     TARGET_TYPE_SESSION_NAME,
     TARGET_TYPES,
+    CompatPortMapping,
 )
+from flask import render_template, request
 from i18n import get_translations, t
 
 from .. import resources as admin_resources
@@ -193,9 +192,7 @@ def register_compat_routes(blueprint, runtime):
                 error=t("compat_invalid_target_type", ui.locale),
             )
 
-        if target_type == TARGET_TYPE_ENTRY_KEY and not any(
-            entry.key == target_value for entry in entries
-        ):
+        if target_type == TARGET_TYPE_ENTRY_KEY and not any(entry.key == target_value for entry in entries):
             return _render_compat_page(
                 runtime,
                 ui,
@@ -244,9 +241,7 @@ def register_compat_routes(blueprint, runtime):
             )
 
         updated = [
-            item
-            for item in mappings
-            if item.listen_port != mapping.listen_port and item.listen_port != original_port
+            item for item in mappings if item.listen_port != mapping.listen_port and item.listen_port != original_port
         ]
         updated.append(mapping)
         updated.sort(key=lambda item: item.listen_port)
