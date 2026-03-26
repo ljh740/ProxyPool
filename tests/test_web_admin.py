@@ -538,8 +538,10 @@ class TestTriggerReload(unittest.TestCase):
 
     def test_reload_no_server_ref(self):
         """trigger_reload should log and return when no server reference."""
-        # Should not raise
-        trigger_reload(server_ref=None)
+        with self.assertLogs("web_admin", level="WARNING") as captured:
+            trigger_reload(server_ref=None)
+
+        self.assertTrue(any("trigger_reload: no server reference available" in item for item in captured.output))
 
     def test_reload_without_storage_raises(self):
         """trigger_reload should fail fast when the storage layer is missing."""
@@ -597,12 +599,14 @@ class TestTriggerReload(unittest.TestCase):
         old_config = server_ref.config
         old_router = server_ref.router
 
-        trigger_reload(server_ref)
+        with self.assertLogs("persistence", level="ERROR") as captured:
+            trigger_reload(server_ref)
 
         self.assertIsNot(server_ref.config, old_config)
         self.assertIsNot(server_ref.router, old_router)
         self.assertTrue(server_ref.config.auth_password)
         self.assertNotEqual(server_ref.config.auth_password, "old-secret")
+        self.assertTrue(any("Failed to load config from SQLite storage" in item for item in captured.output))
         self.assertEqual(
             load_config(storage)["AUTH_PASSWORD"],
             server_ref.config.auth_password,
@@ -671,8 +675,11 @@ class TestPublicApiRoutes(unittest.TestCase):
         openapi_response = self.client.get("/api/openapi.json")
 
         self.assertEqual(html_response.status_code, 200)
-        self.assertIn("ProxyPool Public API", html_response.get_data(as_text=True))
-        self.assertIn("/api/v1/resolve", html_response.get_data(as_text=True))
+        html = html_response.get_data(as_text=True)
+        self.assertIn("ProxyPool Public API", html)
+        self.assertIn("/api/v1/resolve", html)
+        self.assertNotIn('<nav class="pp-sidebar"', html)
+        self.assertNotIn('<div class="pp-topbar">', html)
 
         self.assertEqual(text_response.status_code, 200)
         self.assertIn("GET /api/v1/resolve", text_response.get_data(as_text=True))

@@ -1015,7 +1015,7 @@ def register_public_api_routes(blueprint, runtime, *, csrf=None):
         return runtime.build_page_response(
             title=API_TITLE,
             content=content,
-            active_nav="",
+            active_nav=None,
             ui=ui,
         )
 

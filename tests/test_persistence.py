@@ -32,7 +32,6 @@ SQLiteStorage = persistence.SQLiteStorage
 
 
 class _BrokenStorage:
-
     def get(self, state_key):
         raise ConnectionError("storage unavailable")
 
@@ -40,20 +39,24 @@ class _BrokenStorage:
         raise ConnectionError("storage unavailable")
 
 
-def _make_entry(key="test_1", host="proxy.example.com", port=10001,
-                source_tag="manual", in_random_pool=True):
+def _make_entry(key="test_1", host="proxy.example.com", port=10001, source_tag="manual", in_random_pool=True):
     hop = UpstreamHop(
-        scheme="socks5", host=host, port=port,
-        username="user", password="pass",
+        scheme="socks5",
+        host=host,
+        port=port,
+        username="user",
+        password="pass",
     )
     return UpstreamEntry(
-        key=key, label="test", hops=(hop,),
-        source_tag=source_tag, in_random_pool=in_random_pool,
+        key=key,
+        label="test",
+        hops=(hop,),
+        source_tag=source_tag,
+        in_random_pool=in_random_pool,
     )
 
 
 class TestPersistence(unittest.TestCase):
-
     def setUp(self):
         self.storage = SQLiteStorage(":memory:")
 
@@ -165,26 +168,29 @@ class TestPersistence(unittest.TestCase):
     def test_storage_connection_error_handling(self):
         storage = _BrokenStorage()
 
-        # load functions should return safe defaults on storage error
-        self.assertEqual(load_proxy_list(storage), [])
-        self.assertEqual(load_config(storage), {})
-        self.assertEqual(load_batch_params(storage), {})
-        self.assertEqual(load_compat_port_mappings(storage), [])
+        with self.assertLogs("persistence", level="ERROR") as captured:
+            # load functions should return safe defaults on storage error
+            self.assertEqual(load_proxy_list(storage), [])
+            self.assertEqual(load_config(storage), {})
+            self.assertEqual(load_batch_params(storage), {})
+            self.assertEqual(load_compat_port_mappings(storage), [])
 
-        # save functions should not raise on storage error
-        save_proxy_list(storage, [_make_entry()])
-        save_config(storage, {"AUTH_PASSWORD": "secret"})
-        save_batch_params(storage, {"scheme": "http"})
-        save_compat_port_mappings(
-            storage,
-            [
-                CompatPortMapping(
-                    listen_port=33100,
-                    target_type="session_name",
-                    target_value="session-1",
-                )
-            ],
-        )
+            # save functions should not raise on storage error
+            save_proxy_list(storage, [_make_entry()])
+            save_config(storage, {"AUTH_PASSWORD": "secret"})
+            save_batch_params(storage, {"scheme": "http"})
+            save_compat_port_mappings(
+                storage,
+                [
+                    CompatPortMapping(
+                        listen_port=33100,
+                        target_type="session_name",
+                        target_value="session-1",
+                    )
+                ],
+            )
+
+        self.assertGreaterEqual(len(captured.output), 8)
 
 
 if __name__ == "__main__":
