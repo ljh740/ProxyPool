@@ -260,18 +260,37 @@ def _make_test_storage():
     return _MemoryStorage()
 
 
-def _make_hop(host="proxy.example.com", port=10001, scheme="socks5"):
+def _make_hop(
+    host="proxy.example.com",
+    port=10001,
+    scheme="socks5",
+    username="user",
+    password="pass",
+):
     return UpstreamHop(
         scheme=scheme,
         host=host,
         port=port,
-        username="user",
-        password="pass",
+        username=username,
+        password=password,
     )
 
 
-def _make_entry(key="test_1", host="proxy.example.com", port=10001):
-    hop = _make_hop(host=host, port=port)
+def _make_entry(
+    key="test_1",
+    host="proxy.example.com",
+    port=10001,
+    scheme="socks5",
+    username="user",
+    password="pass",
+):
+    hop = _make_hop(
+        host=host,
+        port=port,
+        scheme=scheme,
+        username=username,
+        password=password,
+    )
     return UpstreamEntry(
         key=key,
         label="test",
@@ -708,6 +727,57 @@ class TestPublicApiRoutes(unittest.TestCase):
             payload["data"]["access"]["http_proxy"],
             "http://browser-a:<AUTH_PASSWORD>@127.0.0.1:3128",
         )
+        self.assertRegex(
+            payload["data"]["resolved_entry"]["display"],
+            r"^socks5://user:pass@host[12]\.example\.com:1000[12]$",
+        )
+        self.assertEqual(
+            payload["data"]["resolved_entry"]["safe_display"],
+            payload["data"]["resolved_entry"]["display"].replace("user:pass@", ""),
+        )
+        self.assertEqual(payload["data"]["resolved_entry"]["hops"][0]["username"], "user")
+        self.assertEqual(payload["data"]["resolved_entry"]["hops"][0]["password"], "pass")
+
+    def test_resolve_username_returns_full_upstream_uri(self):
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry(
+                    key="e-full",
+                    host="aa.cc",
+                    port=11111,
+                    scheme="socks5h",
+                    username="a",
+                    password="b",
+                )
+            ],
+        )
+
+        response = self.client.get(
+            "/api/v1/resolve",
+            query_string={"username": "browser-a"},
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            payload["data"]["resolved_entry"]["display"],
+            "socks5h://a:b@aa.cc:11111",
+        )
+        self.assertEqual(
+            payload["data"]["resolved_entry"]["safe_display"],
+            "socks5h://aa.cc:11111",
+        )
+        self.assertEqual(
+            payload["data"]["resolved_entry"]["hops"][0]["display"],
+            "socks5h://a:b@aa.cc:11111",
+        )
+        self.assertEqual(
+            payload["data"]["resolved_entry"]["hops"][0]["safe_display"],
+            "socks5h://aa.cc:11111",
+        )
+        self.assertEqual(payload["data"]["resolved_entry"]["hops"][0]["username"], "a")
+        self.assertEqual(payload["data"]["resolved_entry"]["hops"][0]["password"], "b")
 
     def test_resolve_username_prefers_forwarded_host_for_wildcard_listener(self):
         config = load_config(self.storage)

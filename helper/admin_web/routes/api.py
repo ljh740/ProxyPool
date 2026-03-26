@@ -12,7 +12,7 @@ from compat_ports import (
 )
 from flask import Response, render_template, request
 from router import Router, normalize_username
-from upstream_pool import UpstreamPool
+from upstream_pool import UpstreamEntry, UpstreamHop, UpstreamPool
 
 API_TITLE = "ProxyPool Public API"
 API_VERSION = "v1"
@@ -120,12 +120,38 @@ def _compat_access(app_config, listen_port):
     }
 
 
+def _serialize_auth_fragment(username, password):
+    if not username and not password:
+        return ""
+    quoted_username = _url_quote(username or "", safe="")
+    if password == "":
+        return "%s@" % quoted_username
+    quoted_password = _url_quote(password or "", safe="")
+    return "%s:%s@" % (quoted_username, quoted_password)
+
+
+def _full_hop_display(hop):
+    return "%s://%s%s:%s" % (
+        hop.scheme,
+        _serialize_auth_fragment(hop.username, hop.password),
+        hop.host,
+        hop.port,
+    )
+
+
+def _full_entry_display(entry):
+    return " -> ".join(_full_hop_display(hop) for hop in entry.hops)
+
+
 def _serialize_hop(hop):
     return {
         "scheme": hop.scheme,
         "host": hop.host,
         "port": hop.port,
-        "display": hop.display,
+        "display": _full_hop_display(hop),
+        "safe_display": hop.display,
+        "username": hop.username,
+        "password": hop.password,
         "has_username": bool(hop.username),
         "has_password": bool(hop.password),
     }
@@ -135,7 +161,8 @@ def _serialize_entry(entry):
     return {
         "entry_key": entry.key,
         "label": entry.label,
-        "display": entry.display,
+        "display": _full_entry_display(entry),
+        "safe_display": entry.display,
         "hop_count": entry.chain_length,
         "source_tag": entry.source_tag,
         "in_random_pool": entry.in_random_pool,
@@ -251,6 +278,24 @@ def _docs_base_url():
     return request.url_root.rstrip("/")
 
 
+def _example_entry():
+    return UpstreamEntry(
+        key="e1",
+        label="host1.example.com:10001",
+        hops=(
+            UpstreamHop(
+                scheme="socks5",
+                host="host1.example.com",
+                port=10001,
+                username="user",
+                password="pass",
+            ),
+        ),
+        source_tag="manual",
+        in_random_pool=True,
+    )
+
+
 def _example_resolve_response(app_config):
     return {
         "ok": True,
@@ -260,24 +305,7 @@ def _example_resolve_response(app_config):
                 "value": "browser-a",
             },
             "access": _main_proxy_access(app_config, "browser-a"),
-            "resolved_entry": {
-                "entry_key": "e1",
-                "label": "host1.example.com:10001",
-                "display": "socks5://host1.example.com:10001",
-                "hop_count": 1,
-                "source_tag": "manual",
-                "in_random_pool": True,
-                "hops": [
-                    {
-                        "scheme": "socks5",
-                        "host": "host1.example.com",
-                        "port": 10001,
-                        "display": "socks5://host1.example.com:10001",
-                        "has_username": True,
-                        "has_password": True,
-                    }
-                ],
-            },
+            "resolved_entry": _serialize_entry(_example_entry()),
         },
     }
 
@@ -295,24 +323,7 @@ def _example_bind_response(app_config):
         "data": {
             "created": True,
             "mapping": _serialize_mapping(mapping, app_config),
-            "resolved_entry": {
-                "entry_key": "e1",
-                "label": "host1.example.com:10001",
-                "display": "socks5://host1.example.com:10001",
-                "hop_count": 1,
-                "source_tag": "manual",
-                "in_random_pool": True,
-                "hops": [
-                    {
-                        "scheme": "socks5",
-                        "host": "host1.example.com",
-                        "port": 10001,
-                        "display": "socks5://host1.example.com:10001",
-                        "has_username": True,
-                        "has_password": True,
-                    }
-                ],
-            },
+            "resolved_entry": _serialize_entry(_example_entry()),
         },
     }
 
@@ -330,24 +341,7 @@ def _example_allocate_response(app_config):
         "data": {
             "created": True,
             "mapping": _serialize_mapping(mapping, app_config),
-            "resolved_entry": {
-                "entry_key": "e1",
-                "label": "host1.example.com:10001",
-                "display": "socks5://host1.example.com:10001",
-                "hop_count": 1,
-                "source_tag": "manual",
-                "in_random_pool": True,
-                "hops": [
-                    {
-                        "scheme": "socks5",
-                        "host": "host1.example.com",
-                        "port": 10001,
-                        "display": "socks5://host1.example.com:10001",
-                        "has_username": True,
-                        "has_password": True,
-                    }
-                ],
-            },
+            "resolved_entry": _serialize_entry(_example_entry()),
         },
     }
 
@@ -355,7 +349,10 @@ def _example_allocate_response(app_config):
 def _api_spec(runtime):
     app_config = runtime.load_app_config()
     base_url = _docs_base_url()
-    docs_warning = "These endpoints are unauthenticated. Expose them only on localhost or within a trusted network."
+    docs_warning = (
+        "These endpoints are unauthenticated and may return real upstream credentials. "
+        "Expose them only on localhost or within a trusted network."
+    )
     endpoints = [
         {
             "method": "GET",

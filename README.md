@@ -142,7 +142,7 @@ The actual callable endpoints live under `/api/v1`:
 - `POST /api/v1/compat/allocate`
 - `POST /api/v1/compat/unbind`
 
-These endpoints are unauthenticated by design, which makes them convenient for local or trusted-network automation. Returned payloads do not expose the stored real passwords directly.
+These endpoints are unauthenticated by design, which makes them convenient for local or trusted-network automation. Entry payloads may include the real upstream username, password, and full proxy URI, so expose `/api` only on localhost or within a trusted network.
 
 Examples:
 - `curl 'http://127.0.0.1:8077/api'`
