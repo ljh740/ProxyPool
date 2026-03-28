@@ -85,6 +85,14 @@ PROXY_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         group="advanced",
     ),
     ConfigField(
+        "COUNTRY_DETECT_MAX_WORKERS",
+        "Country Detect Workers",
+        "number",
+        "4",
+        "COUNTRY_DETECT_MAX_WORKERS - Max concurrent country-detection requests",
+        group="advanced",
+    ),
+    ConfigField(
         "RELAY_TIMEOUT",
         "Relay Timeout",
         "float",
@@ -255,6 +263,7 @@ class AppConfig:
     auth_realm: str
     upstream_connect_timeout: float
     upstream_connect_retries: int
+    country_detect_max_workers: int
     relay_timeout: float
     rewrite_loopback_to_host: str
     host_loopback_address: str
@@ -279,6 +288,9 @@ class AppConfig:
             ),
             upstream_connect_retries=max(
                 1, _parse_int(values.get("UPSTREAM_CONNECT_RETRIES"), 3)
+            ),
+            country_detect_max_workers=max(
+                1, _parse_int(values.get("COUNTRY_DETECT_MAX_WORKERS"), 4)
             ),
             relay_timeout=_parse_float(values.get("RELAY_TIMEOUT"), 120.0),
             rewrite_loopback_to_host=str(
@@ -434,6 +446,7 @@ class AppConfig:
             "AUTH_REALM": self.auth_realm,
             "UPSTREAM_CONNECT_TIMEOUT": str(self.upstream_connect_timeout),
             "UPSTREAM_CONNECT_RETRIES": str(self.upstream_connect_retries),
+            "COUNTRY_DETECT_MAX_WORKERS": str(self.country_detect_max_workers),
             "RELAY_TIMEOUT": str(self.relay_timeout),
             "REWRITE_LOOPBACK_TO_HOST": self.rewrite_loopback_to_host,
             "HOST_LOOPBACK_ADDRESS": self.host_loopback_address,
@@ -543,6 +556,9 @@ def validate_config_form(
                 )
                 continue
             if field.env_key == "UPSTREAM_CONNECT_RETRIES" and val < 1:
+                errors.append(error_formatter("at_least", label=label, minimum="1"))
+                continue
+            if field.env_key == "COUNTRY_DETECT_MAX_WORKERS" and val < 1:
                 errors.append(error_formatter("at_least", label=label, minimum="1"))
                 continue
             clean[field.env_key] = str(val)

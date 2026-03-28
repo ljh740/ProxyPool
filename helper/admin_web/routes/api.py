@@ -166,6 +166,7 @@ def _serialize_entry(entry):
         "hop_count": entry.chain_length,
         "source_tag": entry.source_tag,
         "in_random_pool": entry.in_random_pool,
+        "tags": dict(entry.tags),
         "hops": [_serialize_hop(hop) for hop in entry.hops],
     }
 
@@ -240,12 +241,12 @@ def _build_resolve_response(app_config, query_type, query_value, resolved_entry,
     return data
 
 
-def _list_entries_payload(entries, app_config, mappings):
+def _list_entries_payload(entries, app_config, mappings, *, tag_filters=None):
     exact_bindings = {}
     for mapping in mappings:
         if mapping.target_type == TARGET_TYPE_ENTRY_KEY:
             exact_bindings.setdefault(mapping.target_value, []).append(mapping.listen_port)
-    return {
+    payload = {
         "items": [
             {
                 **_serialize_entry(entry),
@@ -256,6 +257,11 @@ def _list_entries_payload(entries, app_config, mappings):
         ],
         "count": len(entries),
     }
+    if tag_filters:
+        payload["filters"] = {
+            "tags": {key: list(values) for key, values in tag_filters.items()}
+        }
+    return payload
 
 
 def _list_mappings_payload(app_config, router, mappings):
@@ -293,7 +299,38 @@ def _example_entry():
         ),
         source_tag="manual",
         in_random_pool=True,
+        tags={"country": "US"},
     )
+
+
+def _parse_tag_filters(args):
+    tag_filters = {}
+    for query_key in sorted(args.keys()):
+        if not query_key.startswith("tag_"):
+            continue
+        tag_key = query_key[4:].strip().lower()
+        if not tag_key:
+            continue
+        values = []
+        for raw_value in args.getlist(query_key):
+            for value in str(raw_value).split(","):
+                normalized_value = value.strip()
+                if normalized_value:
+                    values.append(normalized_value)
+        if values:
+            tag_filters[tag_key] = tuple(dict.fromkeys(values))
+    return tag_filters
+
+
+def _entry_matches_tag_filters(entry, tag_filters):
+    for tag_key, values in tag_filters.items():
+        entry_value = str(entry.tags.get(tag_key, "")).strip().lower()
+        if not entry_value:
+            return False
+        normalized_values = {value.strip().lower() for value in values if value.strip()}
+        if entry_value not in normalized_values:
+            return False
+    return True
 
 
 def _example_resolve_response(app_config):
@@ -444,12 +481,28 @@ def _api_spec(runtime):
             "method": "GET",
             "path": "/api/v1/entries",
             "summary": "List all upstream entries.",
-            "description": "Useful for discovering valid entry_key values before binding exact ports.",
-            "query_params": [],
+            "description": (
+                "Useful for discovering valid entry_key values before binding exact ports. "
+                "Returns persisted tags and supports tag filters."
+            ),
+            "query_params": [
+                {
+                    "name": "tag_country",
+                    "type": "string",
+                    "required": False,
+                    "description": "Return only entries whose country tag matches the provided value, for example US.",
+                }
+            ],
             "json_body": None,
-            "curl_example": "curl '%s/api/v1/entries'" % base_url,
+            "curl_example": "curl '%s/api/v1/entries?tag_country=US'" % base_url,
             "python_example": (
-                "import requests\nentries = requests.get('%s/api/v1/entries', timeout=10).json()\nprint(entries)"
+                "import requests\n"
+                "entries = requests.get(\n"
+                "    '%s/api/v1/entries',\n"
+                "    params={'tag_country': 'US'},\n"
+                "    timeout=10,\n"
+                ").json()\n"
+                "print(entries)"
             )
             % base_url,
             "response_example": {
@@ -463,6 +516,7 @@ def _api_spec(runtime):
                             "hop_count": 1,
                             "source_tag": "manual",
                             "in_random_pool": True,
+                            "tags": {"country": "US"},
                             "hops": [
                                 {
                                     "scheme": "socks5",
@@ -478,6 +532,7 @@ def _api_spec(runtime):
                         }
                     ],
                     "count": 1,
+                    "filters": {"tags": {"country": ["US"]}},
                 },
             },
             "errors": [],
@@ -804,6 +859,15 @@ def _openapi_spec(runtime):
             "/api/v1/entries": {
                 "get": {
                     "summary": "List all upstream entries.",
+                    "parameters": [
+                        {
+                            "name": "tag_country",
+                            "in": "query",
+                            "schema": {"type": "string"},
+                            "required": False,
+                            "description": "Return only entries whose country tag matches the provided value.",
+                        }
+                    ],
                     "responses": {
                         "200": {
                             "description": "Entry list",
@@ -1129,8 +1193,20 @@ def register_public_api_routes(blueprint, runtime, *, csrf=None):
     def api_entries():
         storage = runtime.get_storage()
         entries = list(runtime.load_entries(storage))
+        tag_filters = _parse_tag_filters(request.args)
+        if tag_filters:
+            entries = [
+                entry for entry in entries if _entry_matches_tag_filters(entry, tag_filters)
+            ]
         mappings = list(runtime.load_compat_mappings(storage))
-        return _api_success(_list_entries_payload(entries, runtime.load_app_config(), mappings))
+        return _api_success(
+            _list_entries_payload(
+                entries,
+                runtime.load_app_config(),
+                mappings,
+                tag_filters=tag_filters,
+            )
+        )
 
     @blueprint.get("/api/v1/compat/mappings")
     def api_compat_mappings():

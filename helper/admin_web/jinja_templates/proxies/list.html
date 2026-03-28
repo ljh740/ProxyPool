@@ -6,6 +6,7 @@
         <span class="pp-proxy-summary-item">{{ total }} {{ i.proxies_total }}</span>
         <span class="pp-proxy-summary-item">{{ manual_count }} {{ i.proxies_manual }}</span>
         <span class="pp-proxy-summary-item">{{ auto_count }} {{ i.proxies_auto }}</span>
+        <span class="pp-proxy-summary-item">{{ missing_country_count }} {{ i.proxies_country_missing }}</span>
       </div>
     </div>
     <div class="pp-proxy-header-actions">
@@ -15,6 +16,15 @@
       <a href="/dashboard/proxies/batch" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)">
         <i class="ti ti-stack me-1"></i>{{ i.proxies_batch_generate }}
       </a>
+      {% if total %}
+      <button type="button"
+              id="detect-missing-country-btn"
+              class="btn btn-sm"
+              style="border:1px solid var(--pp-border);color:var(--pp-text)"
+              {% if not missing_country_count %}disabled{% endif %}>
+        <i class="ti ti-flag-3 me-1"></i>{{ i.proxies_country_detect_missing }}
+      </button>
+      {% endif %}
       {% if auto_count > 0 %}
       <form method="post" action="/dashboard/proxies/batch/clear" style="display:inline" onsubmit="setLoading(this.querySelector('button'))">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -31,18 +41,33 @@
 </div>
 {% if total %}
 <div class="pp-toolbar pp-proxy-toolbar">
-  <div class="pp-proxy-filter" role="group" aria-label="Source filter">
-    <a href="{{ filter_urls['all'] }}" class="btn btn-sm{% if active_filter == 'all' %} active{% endif %}" data-filter="all">{{ i.proxies_filter_all }}</a>
-    <a href="{{ filter_urls['manual'] }}" class="btn btn-sm{% if active_filter == 'manual' %} active{% endif %}" data-filter="manual">{{ i.proxies_filter_manual }}</a>
-    <a href="{{ filter_urls['auto'] }}" class="btn btn-sm{% if active_filter == 'auto' %} active{% endif %}" data-filter="auto">{{ i.proxies_filter_auto }}</a>
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    <div class="pp-proxy-filter" role="group" aria-label="Source filter">
+      <a href="{{ filter_urls['all'] }}" class="btn btn-sm{% if active_filter == 'all' %} active{% endif %}" data-filter="all">{{ i.proxies_filter_all }}</a>
+      <a href="{{ filter_urls['manual'] }}" class="btn btn-sm{% if active_filter == 'manual' %} active{% endif %}" data-filter="manual">{{ i.proxies_filter_manual }}</a>
+      <a href="{{ filter_urls['auto'] }}" class="btn btn-sm{% if active_filter == 'auto' %} active{% endif %}" data-filter="auto">{{ i.proxies_filter_auto }}</a>
+    </div>
+    <form method="get" action="/dashboard/proxies" class="d-flex align-items-center gap-2 flex-wrap">
+      {% if active_filter != 'all' %}
+      <input type="hidden" name="source" value="{{ active_filter }}">
+      {% endif %}
+      <label for="country-filter" style="color:var(--pp-text-secondary);font-size:0.85rem">{{ i.proxies_filter_country_label }}</label>
+      <select id="country-filter" name="country" class="form-select form-select-sm" style="min-width:120px" onchange="this.form.submit()">
+        <option value="">{{ i.proxies_filter_country_all }}</option>
+        {% for country in available_countries %}
+        <option value="{{ country }}" {% if country == active_country_filter %}selected{% endif %}>{{ country }}</option>
+        {% endfor %}
+      </select>
+    </form>
   </div>
   {% if entries %}
   <div id="batch-toolbar" style="display:none" class="pp-proxy-batch-toolbar">
     <span style="color:var(--pp-text-secondary);font-size:0.85rem"><span id="selected-count">0</span> {{ i.proxies_selected }}</span>
-    <button type="button" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" onclick="invertSelection()">{{ i.proxies_invert }}</button>
-    <button type="button" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none" onclick="batchTogglePool('on')">{{ i.proxies_pool_on }}</button>
-    <button type="button" class="btn btn-sm" style="background:var(--pp-warning-subtle);color:var(--pp-warning);border:none" onclick="batchTogglePool('off')">{{ i.proxies_pool_off }}</button>
-    <button type="button" class="btn btn-sm" style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none" onclick="batchDelete()">{{ i.proxies_delete_selected }}</button>
+    <button type="button" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" data-batch-action="invert">{{ i.proxies_invert }}</button>
+    <button type="button" id="batch-detect-country-btn" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" data-batch-action="detect-country">{{ i.proxies_country_detect_selected }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none" data-batch-action="toggle-pool" data-pool-state="on">{{ i.proxies_pool_on }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-warning-subtle);color:var(--pp-warning);border:none" data-batch-action="toggle-pool" data-pool-state="off">{{ i.proxies_pool_off }}</button>
+    <button type="button" class="btn btn-sm" style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none" data-batch-action="delete">{{ i.proxies_delete_selected }}</button>
   </div>
   {% endif %}
 </div>
@@ -56,6 +81,7 @@
           <th class="pp-proxy-col-compact">{{ i.proxies_th_key }}</th>
           <th>{{ i.proxies_th_label }}</th>
           <th>{{ i.proxies_th_hops }}</th>
+          <th>{{ i.proxies_th_tags }}</th>
           <th class="pp-proxy-col-compact">{{ i.proxies_th_source }}</th>
           <th class="pp-proxy-col-compact">{{ i.proxies_th_random_pool }}</th>
           <th class="pp-proxy-col-compact">{{ i.proxies_th_actions }}</th>
@@ -68,6 +94,17 @@
           <td class="pp-proxy-key"><code>{{ entry.key }}</code></td>
           <td class="pp-proxy-label">{{ entry.label }}</td>
           <td class="pp-proxy-chain"><code>{{ entry.display }}</code> <small style="color:var(--pp-text-muted)">({{ entry.chain_length }})</small></td>
+          <td class="pp-proxy-tags">
+            {% if entry.tags %}
+            <div class="d-flex gap-1 flex-wrap">
+              {% for tag_key, tag_value in entry.tags|dictsort %}
+              <span class="badge bg-azure-lt text-azure">{{ tag_key }}: {{ tag_value }}</span>
+              {% endfor %}
+            </div>
+            {% else %}
+            <span style="color:var(--pp-text-muted);font-size:0.8rem">{{ i.proxies_tags_empty }}</span>
+            {% endif %}
+          </td>
           <td class="pp-proxy-col-compact">
             {% if entry.source_tag == 'manual' %}
             <span class="pp-badge pp-badge-manual">{{ i.proxies_badge_manual }}</span>
@@ -98,6 +135,16 @@
           </td>
           <td class="pp-proxy-col-compact">
             <div class="pp-table-actions">
+              <button type="button"
+                      class="btn btn-sm pp-detect-country-btn"
+                      data-key="{{ entry.key }}"
+                      style="border:1px solid var(--pp-border);color:var(--pp-text);font-size:0.8rem">
+                {% if entry.tags.get('country') %}
+                {{ i.proxies_country_refresh }}
+                {% else %}
+                {{ i.proxies_country_detect }}
+                {% endif %}
+              </button>
               <a href="/dashboard/proxies/{{ entry.key }}/edit"
                  class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text);font-size:0.8rem">{{ i.proxies_btn_edit }}</a>
               <form method="post" style="display:inline"
@@ -165,3 +212,10 @@
 </form>
 <span id="i18n-delete-selected-confirm" style="display:none">{{ i.proxies_delete_selected_confirm }}</span>
 <span id="i18n-pool-toggle-error" style="display:none">{{ i.proxies_pool_toggle_failed }}</span>
+<div id="proxy-country-detect-i18n"
+     data-completed-template="{{ i.proxies_country_detect_completed }}"
+     data-failed-template="{{ i.proxies_country_detect_failed }}"
+     data-running-template="{{ i.proxies_country_detect_running }}"
+     data-unknown-error="{{ i.proxies_country_detect_unknown_error }}"
+     data-no-selection="{{ i.proxies_no_selection }}"
+     style="display:none"></div>

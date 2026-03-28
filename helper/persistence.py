@@ -111,6 +111,7 @@ def _serialize_entry(entry):
         "hops": [_serialize_hop(hop) for hop in entry.hops],
         "source_tag": entry.source_tag,
         "in_random_pool": entry.in_random_pool,
+        "tags": dict(entry.tags),
     }
 
 
@@ -133,6 +134,7 @@ def _deserialize_entry(data):
         hops=hops,
         source_tag=data.get("source_tag", "manual"),
         in_random_pool=data.get("in_random_pool", True),
+        tags=data.get("tags", {}),
     )
 
 

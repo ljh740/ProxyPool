@@ -11,6 +11,19 @@ SUPPORTED_UPSTREAM_SCHEMES = {"http", "socks5", "socks5h"}
 CHAIN_SEPARATOR_PATTERN = re.compile(r"\s+\|\s+")
 
 
+def _normalize_entry_tags(tags):
+    if not tags:
+        return {}
+    normalized = {}
+    for key, value in dict(tags).items():
+        normalized_key = str(key).strip().lower()
+        normalized_value = str(value).strip()
+        if not normalized_key or not normalized_value:
+            continue
+        normalized[normalized_key] = normalized_value
+    return normalized
+
+
 @dataclass(frozen=True)
 class UpstreamHop:
     scheme: str
@@ -31,10 +44,12 @@ class UpstreamEntry:
     hops: Tuple[UpstreamHop, ...]
     source_tag: str = "manual"
     in_random_pool: bool = True
+    tags: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.hops:
             raise ValueError("Upstream entry must contain at least one hop")
+        object.__setattr__(self, "tags", _normalize_entry_tags(self.tags))
 
     @property
     def chain_length(self):

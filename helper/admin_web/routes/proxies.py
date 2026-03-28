@@ -1,5 +1,6 @@
 """Proxy-management routes for the admin Flask app."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import threading
@@ -12,6 +13,14 @@ from flask import Response, render_template, request
 
 from i18n import get_translations, t
 from persistence import load_batch_params, save_batch_params
+from proxy_tags import (
+    COUNTRY_TAG,
+    entry_country_tag,
+    merge_country_tag_updates,
+    normalize_country_tag,
+    resolve_entry_country_tag,
+    without_entry_tags,
+)
 from upstream_pool import (
     SUPPORTED_UPSTREAM_SCHEMES,
     UpstreamEntry,
@@ -31,6 +40,10 @@ IMPORT_CHECK_JOB_TTL_SECONDS = 1800
 IMPORT_CHECK_POLL_INTERVAL_MS = 750
 _IMPORT_CHECK_JOBS = {}
 _IMPORT_CHECK_JOBS_LOCK = threading.RLock()
+COUNTRY_DETECT_JOB_TTL_SECONDS = 1800
+COUNTRY_DETECT_POLL_INTERVAL_MS = 750
+_COUNTRY_DETECT_JOBS = {}
+_COUNTRY_DETECT_JOBS_LOCK = threading.RLock()
 
 
 @dataclass
@@ -48,18 +61,80 @@ class _ImportCheckJob:
 
     def snapshot(self):
         with self.lock:
-            success_count = len(self.successful_entries)
-            return {
-                "job_id": self.job_id,
-                "status": self.status,
-                "total": len(self.results),
-                "completed": self.completed,
-                "success_count": success_count,
-                "failure_count": self.completed - success_count,
-                "error": self.error,
-                "results": [dict(item) for item in self.results],
-                "poll_interval_ms": IMPORT_CHECK_POLL_INTERVAL_MS,
-            }
+            return _build_job_snapshot(
+                self,
+                poll_interval_ms=IMPORT_CHECK_POLL_INTERVAL_MS,
+                success_count=len(self.successful_entries),
+            )
+
+
+@dataclass
+class _CountryDetectJob:
+    job_id: str
+    locale: str
+    target_entries: list
+    status: str = "pending"
+    results: list = field(default_factory=list)
+    completed: int = 0
+    success_count: int = 0
+    updated_count: int = 0
+    created_at: float = field(default_factory=time.time)
+    error: str = ""
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def snapshot(self):
+        with self.lock:
+            return _build_job_snapshot(
+                self,
+                poll_interval_ms=COUNTRY_DETECT_POLL_INTERVAL_MS,
+                success_count=self.success_count,
+                extra_fields={"updated_count": self.updated_count},
+            )
+
+
+def _build_job_snapshot(job, *, poll_interval_ms, success_count, extra_fields=None):
+    snapshot = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "total": len(job.results),
+        "completed": job.completed,
+        "success_count": success_count,
+        "failure_count": job.completed - success_count,
+        "error": job.error,
+        "results": [dict(item) for item in job.results],
+        "poll_interval_ms": poll_interval_ms,
+    }
+    if extra_fields:
+        snapshot.update(extra_fields)
+    return snapshot
+
+
+def _prune_jobs(job_store, jobs_lock, ttl_seconds):
+    cutoff = time.time() - ttl_seconds
+    with jobs_lock:
+        stale_ids = [job_id for job_id, job in job_store.items() if job.created_at < cutoff]
+        for job_id in stale_ids:
+            job_store.pop(job_id, None)
+
+
+def _get_job(job_id, *, job_store, jobs_lock, ttl_seconds):
+    _prune_jobs(job_store, jobs_lock, ttl_seconds)
+    with jobs_lock:
+        return job_store.get(job_id)
+
+
+def _remove_job(job_id, *, job_store, jobs_lock):
+    with jobs_lock:
+        job_store.pop(job_id, None)
+
+
+def _launch_background_job(job, *, job_store, jobs_lock, ttl_seconds, target, args):
+    _prune_jobs(job_store, jobs_lock, ttl_seconds)
+    with jobs_lock:
+        job_store[job.job_id] = job
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    thread.start()
+    return job
 
 
 def _format_hop_uri(hop):
@@ -86,18 +161,28 @@ def _build_proxy_summary(entry):
         "hop_count": len(entry.hops),
     }
 
-
-def _build_proxy_list_state(locale, entries, source_filter, page_value, proxies_per_page):
+def _build_proxy_list_state(locale, entries, source_filter, country_filter, page_value, proxies_per_page):
     manual_count = sum(1 for entry in entries if entry.source_tag == "manual")
     auto_count = len(entries) - manual_count
+    available_countries = sorted(
+        {entry_country_tag(entry) for entry in entries if entry_country_tag(entry)}
+    )
+    missing_country_count = sum(1 for entry in entries if not entry_country_tag(entry))
     active_filter = (source_filter or "all").strip().lower()
     if active_filter not in {"all", "manual", "auto"}:
         active_filter = "all"
+    active_country_filter = normalize_country_tag(country_filter)
 
     if active_filter == "all":
         filtered_entries = entries
     else:
         filtered_entries = [entry for entry in entries if entry.source_tag == active_filter]
+    if active_country_filter:
+        filtered_entries = [
+            entry
+            for entry in filtered_entries
+            if entry_country_tag(entry) == active_country_filter
+        ]
     filtered_total = len(filtered_entries)
     total_pages = max(1, math.ceil(filtered_total / proxies_per_page))
     try:
@@ -110,11 +195,14 @@ def _build_proxy_list_state(locale, entries, source_filter, page_value, proxies_
     end = start + proxies_per_page
     page_entries = filtered_entries[start:end]
 
-    def _page_url(page_number, source=None):
+    def _page_url(page_number, source=None, country=None):
         page_source = active_filter if source is None else source
+        page_country = active_country_filter if country is None else normalize_country_tag(country)
         params = []
         if page_source != "all":
             params.append(("source", page_source))
+        if page_country:
+            params.append(("country", page_country))
         if page_number != 1:
             params.append(("page", str(page_number)))
         return build_redirect_location("/dashboard/proxies", **dict(params)) if params else "/dashboard/proxies"
@@ -140,6 +228,9 @@ def _build_proxy_list_state(locale, entries, source_filter, page_value, proxies_
         "total": len(entries),
         "manual_count": manual_count,
         "auto_count": auto_count,
+        "available_countries": available_countries,
+        "active_country_filter": active_country_filter,
+        "missing_country_count": missing_country_count,
         "active_filter": active_filter,
         "filter_urls": {
             "all": _page_url(1, "all"),
@@ -289,6 +380,7 @@ def _replace_auto_entries(existing_entries, new_entries):
             hops=entry.hops,
             source_tag="auto",
             in_random_pool=True,
+            tags=entry.tags,
         )
         if normalized.key in existing_keys:
             continue
@@ -309,6 +401,7 @@ def _append_manual_entries(existing_entries, new_entries):
             hops=entry.hops,
             source_tag="manual",
             in_random_pool=True,
+            tags=entry.tags,
         )
         if normalized.key in existing_keys:
             continue
@@ -404,22 +497,13 @@ def _probe_import_entry(config, entry):
                 pass
 
 
-def _prune_import_check_jobs():
-    cutoff = time.time() - IMPORT_CHECK_JOB_TTL_SECONDS
-    with _IMPORT_CHECK_JOBS_LOCK:
-        stale_ids = [
-            job_id
-            for job_id, job in _IMPORT_CHECK_JOBS.items()
-            if job.created_at < cutoff
-        ]
-        for job_id in stale_ids:
-            _IMPORT_CHECK_JOBS.pop(job_id, None)
-
-
 def _get_import_check_job(job_id):
-    _prune_import_check_jobs()
-    with _IMPORT_CHECK_JOBS_LOCK:
-        return _IMPORT_CHECK_JOBS.get(job_id)
+    return _get_job(
+        job_id,
+        job_store=_IMPORT_CHECK_JOBS,
+        jobs_lock=_IMPORT_CHECK_JOBS_LOCK,
+        ttl_seconds=IMPORT_CHECK_JOB_TTL_SECONDS,
+    )
 
 
 def _run_import_check_job(runtime, job):
@@ -451,7 +535,6 @@ def _run_import_check_job(runtime, job):
 
 
 def _create_import_check_job(runtime, locale, parsed_entries):
-    _prune_import_check_jobs()
     job = _ImportCheckJob(
         job_id=uuid.uuid4().hex,
         locale=locale,
@@ -468,15 +551,128 @@ def _create_import_check_job(runtime, locale, parsed_entries):
             for line_number, entry in parsed_entries
         ],
     )
-    with _IMPORT_CHECK_JOBS_LOCK:
-        _IMPORT_CHECK_JOBS[job.job_id] = job
-    thread = threading.Thread(
+    return _launch_background_job(
+        job,
+        job_store=_IMPORT_CHECK_JOBS,
+        jobs_lock=_IMPORT_CHECK_JOBS_LOCK,
+        ttl_seconds=IMPORT_CHECK_JOB_TTL_SECONDS,
         target=_run_import_check_job,
         args=(runtime, job),
-        daemon=True,
     )
-    thread.start()
-    return job
+
+
+def _get_country_detect_job(job_id):
+    return _get_job(
+        job_id,
+        job_store=_COUNTRY_DETECT_JOBS,
+        jobs_lock=_COUNTRY_DETECT_JOBS_LOCK,
+        ttl_seconds=COUNTRY_DETECT_JOB_TTL_SECONDS,
+    )
+
+
+def _country_result_message(locale, country, changed):
+    if changed:
+        return t("proxies_country_detect_detected", locale, country=country)
+    return t("proxies_country_detect_unchanged", locale, country=country)
+
+
+def _resolve_country_detection_targets(entries, selected_keys, detect_missing_only):
+    if selected_keys:
+        selected_lookup = set(selected_keys)
+        return [entry for entry in entries if entry.key in selected_lookup]
+    if detect_missing_only:
+        return [entry for entry in entries if not entry_country_tag(entry)]
+    return []
+
+
+def _persist_country_update(runtime, entry_key, country):
+    storage = runtime.get_storage()
+    latest_entries = list(runtime.load_entries(storage))
+    merged_entries, changed = merge_country_tag_updates(latest_entries, {entry_key: country})
+    if changed:
+        runtime.save_entries(merged_entries, storage)
+
+
+def _country_detect_worker_count(app_config, target_count):
+    if target_count <= 0:
+        return 1
+    return min(app_config.country_detect_max_workers, target_count)
+
+
+def _run_country_detect_job(runtime, job):
+    try:
+        app_config = runtime.load_app_config()
+        max_workers = _country_detect_worker_count(app_config, len(job.target_entries))
+        with job.lock:
+            job.status = "running"
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(resolve_entry_country_tag, app_config, entry): (index, entry)
+                for index, entry in enumerate(job.target_entries)
+            }
+            for future in as_completed(future_map):
+                index, entry = future_map[future]
+                previous_country = entry_country_tag(entry)
+                try:
+                    country = future.result()
+                except Exception as exc:  # pragma: no cover - integration path exercised in tests
+                    with job.lock:
+                        job.completed += 1
+                        job.results[index]["status"] = "error"
+                        job.results[index]["message"] = t(
+                            "proxies_country_detect_failed_item",
+                            job.locale,
+                            error=str(exc),
+                        )
+                    continue
+
+                _persist_country_update(runtime, entry.key, country)
+                changed = country != previous_country
+                with job.lock:
+                    job.completed += 1
+                    job.success_count += 1
+                    if changed:
+                        job.updated_count += 1
+                    job.results[index]["status"] = "ok"
+                    job.results[index]["country"] = country
+                    job.results[index]["message"] = _country_result_message(
+                        job.locale,
+                        country,
+                        changed,
+                    )
+
+        with job.lock:
+            job.status = "completed"
+    except Exception as exc:  # pragma: no cover - guarded by integration tests
+        with job.lock:
+            job.status = "failed"
+            job.error = str(exc)
+
+
+def _create_country_detect_job(runtime, locale, target_entries):
+    job = _CountryDetectJob(
+        job_id=uuid.uuid4().hex,
+        locale=locale,
+        target_entries=list(target_entries),
+        results=[
+            {
+                "key": entry.key,
+                "label": entry.label,
+                "status": "pending",
+                "country": entry_country_tag(entry),
+                "message": "",
+            }
+            for entry in target_entries
+        ],
+    )
+    return _launch_background_job(
+        job,
+        job_store=_COUNTRY_DETECT_JOBS,
+        jobs_lock=_COUNTRY_DETECT_JOBS_LOCK,
+        ttl_seconds=COUNTRY_DETECT_JOB_TTL_SECONDS,
+        target=_run_country_detect_job,
+        args=(runtime, job),
+    )
 
 
 def register_proxy_routes(blueprint, runtime):
@@ -493,6 +689,7 @@ def register_proxy_routes(blueprint, runtime):
             ui.locale,
             runtime.load_entries(runtime.get_storage()),
             request.args.get("source", "all"),
+            request.args.get("country", ""),
             request.args.get("page", "1"),
             runtime.proxies_per_page,
         )
@@ -504,6 +701,63 @@ def register_proxy_routes(blueprint, runtime):
             ui=ui,
             extra_scripts=admin_resources.load_template_source("proxies/scripts.js"),
         )
+
+    @blueprint.post("/dashboard/proxies/tags/country/detect")
+    def proxy_country_detect_start():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return guard
+
+        ui = runtime.resolve_ui_state()
+        storage = runtime.get_storage()
+        entries = list(runtime.load_entries(storage))
+        selected_keys = [key.strip() for key in request.form.getlist("keys") if key.strip()]
+        detect_missing_only = request.form.get("detect_missing_only", "0") == "1"
+        target_entries = _resolve_country_detection_targets(
+            entries,
+            selected_keys,
+            detect_missing_only,
+        )
+        if not target_entries:
+            error_message = (
+                t("proxies_country_detect_no_missing", ui.locale)
+                if detect_missing_only
+                else t("proxies_no_selection", ui.locale)
+            )
+            return _json_response({"ok": False, "error": error_message}, status=400)
+
+        job = _create_country_detect_job(runtime, ui.locale, target_entries)
+        return _json_response(
+            {
+                "ok": True,
+                "message": t(
+                    "proxies_country_detect_started",
+                    ui.locale,
+                    count=len(target_entries),
+                ),
+                "job": job.snapshot(),
+            }
+        )
+
+    @blueprint.get("/dashboard/proxies/tags/country/detect/<job_id>")
+    def proxy_country_detect_status(job_id):
+        guard = runtime.require_admin()
+        if guard is not None:
+            return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        job = _get_country_detect_job(job_id)
+        if job is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "error": t(
+                        "proxies_country_detect_not_found",
+                        runtime.resolve_ui_state().locale,
+                    ),
+                },
+                status=404,
+            )
+        return _json_response({"ok": True, "job": job.snapshot()})
 
     @blueprint.get("/dashboard/proxies/add")
     def proxy_add_form():
@@ -748,12 +1002,16 @@ def register_proxy_routes(blueprint, runtime):
         found = False
         for idx, entry in enumerate(entries):
             if entry.key == key:
+                next_entry = entry
+                if entry.hops != hops:
+                    next_entry = without_entry_tags(entry, COUNTRY_TAG)
                 entries[idx] = UpstreamEntry(
                     key=new_key,
                     label=label,
                     hops=hops,
                     source_tag=entry.source_tag,
                     in_random_pool=in_pool,
+                    tags=next_entry.tags,
                 )
                 found = True
                 break
@@ -892,8 +1150,11 @@ def register_proxy_routes(blueprint, runtime):
             )
         runtime.save_entries(merged, storage)
         runtime.trigger_reload()
-        with _IMPORT_CHECK_JOBS_LOCK:
-            _IMPORT_CHECK_JOBS.pop(job_id, None)
+        _remove_job(
+            job_id,
+            job_store=_IMPORT_CHECK_JOBS,
+            jobs_lock=_IMPORT_CHECK_JOBS_LOCK,
+        )
         return _json_response(
             {
                 "ok": True,
@@ -950,6 +1211,7 @@ def register_proxy_routes(blueprint, runtime):
                     hops=entry.hops,
                     source_tag=entry.source_tag,
                     in_random_pool=not entry.in_random_pool,
+                    tags=entry.tags,
                 )
                 found = True
                 break
@@ -1050,6 +1312,7 @@ def register_proxy_routes(blueprint, runtime):
                     hops=entry.hops,
                     source_tag=entry.source_tag,
                     in_random_pool=new_pool_value,
+                    tags=entry.tags,
                 )
                 changed += 1
 

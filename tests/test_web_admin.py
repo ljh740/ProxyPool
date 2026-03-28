@@ -18,6 +18,7 @@ proxy_server = importlib.import_module("proxy_server")
 persistence = importlib.import_module("persistence")
 compat_ports = importlib.import_module("compat_ports")
 admin_auth = importlib.import_module("admin_web.auth")
+proxy_routes = importlib.import_module("admin_web.routes.proxies")
 
 # Import web_admin with os.environ patches so it does not fail on missing
 # server references during import.
@@ -134,6 +135,7 @@ class TestWebAdmin(unittest.TestCase):
             "AUTH_REALM": "TestProxy",
             "UPSTREAM_CONNECT_TIMEOUT": "10.0",
             "UPSTREAM_CONNECT_RETRIES": "5",
+            "COUNTRY_DETECT_MAX_WORKERS": "6",
             "RELAY_TIMEOUT": "60.0",
             "REWRITE_LOOPBACK_TO_HOST": "off",
             "HOST_LOOPBACK_ADDRESS": "172.17.0.1",
@@ -158,6 +160,7 @@ class TestWebAdmin(unittest.TestCase):
             "AUTH_REALM": "Proxy",
             "UPSTREAM_CONNECT_TIMEOUT": "20.0",
             "UPSTREAM_CONNECT_RETRIES": "3",
+            "COUNTRY_DETECT_MAX_WORKERS": "5",
             "RELAY_TIMEOUT": "120.0",
             "REWRITE_LOOPBACK_TO_HOST": "auto",
             "HOST_LOOPBACK_ADDRESS": "host.docker.internal",
@@ -178,11 +181,13 @@ class TestWebAdmin(unittest.TestCase):
         self.assertEqual(app_config.admin_port, 9090)
         self.assertEqual(app_config.admin_password, "")
         self.assertEqual(app_config.runtime_values()["WEB_PORT"], "9090")
+        self.assertEqual(app_config.country_detect_max_workers, 4)
 
     def test_app_config_load_falls_back_to_runtime_env_when_storage_is_empty(self):
         environ = {
             "PROXY_HOST": "env-host",
             "AUTH_PASSWORD": "env-secret",
+            "COUNTRY_DETECT_MAX_WORKERS": "6",
             "STATE_DB_PATH": "/tmp/runtime.sqlite3",
             "WEB_PORT": "8088",
         }
@@ -194,6 +199,7 @@ class TestWebAdmin(unittest.TestCase):
         self.assertEqual(app_config.state_db_path, "/tmp/runtime.sqlite3")
         self.assertEqual(app_config.admin_password, "")
         self.assertEqual(app_config.admin_port, 8088)
+        self.assertEqual(app_config.country_detect_max_workers, 6)
 
     def test_bootstrap_only_keys_cover_final_boundary(self):
         self.assertEqual(
@@ -283,6 +289,7 @@ def _make_entry(
     scheme="socks5",
     username="user",
     password="pass",
+    tags=None,
 ):
     hop = _make_hop(
         host=host,
@@ -297,6 +304,7 @@ def _make_entry(
         hops=(hop,),
         source_tag="manual",
         in_random_pool=True,
+        tags=tags or {},
     )
 
 
@@ -448,6 +456,34 @@ class TestAdminThemeStyles(unittest.TestCase):
         self.assertIn('class="pp-proxy-summary"', web_admin._PROXY_LIST_PAGE)
         self.assertIn('class="table table-vcenter table-striped card-table pp-proxy-table"', web_admin._PROXY_LIST_PAGE)
         self.assertIn("pp-selected-row", web_admin._PROXY_LIST_SCRIPTS)
+        self.assertIn("pp-detect-country-btn", web_admin._PROXY_LIST_PAGE)
+        self.assertIn("detect-missing-country-btn", web_admin._PROXY_LIST_PAGE)
+        self.assertIn('data-batch-action="toggle-pool"', web_admin._PROXY_LIST_PAGE)
+        self.assertIn('data-batch-action="delete"', web_admin._PROXY_LIST_PAGE)
+
+    def test_proxy_list_state_filters_by_country_and_preserves_urls(self):
+        entries = [
+            _make_entry("us-1", "us.example.com", 10001, tags={"country": "US"}),
+            _make_entry("de-1", "de.example.com", 10002, tags={"country": "DE"}),
+            _make_entry("missing", "missing.example.com", 10003),
+        ]
+
+        state = proxy_routes._build_proxy_list_state(
+            "en",
+            entries,
+            "manual",
+            "de",
+            "1",
+            100,
+        )
+
+        self.assertEqual(state["available_countries"], ["DE", "US"])
+        self.assertEqual(state["active_country_filter"], "DE")
+        self.assertEqual(state["missing_country_count"], 1)
+        self.assertEqual([entry.key for entry in state["entries"]], ["de-1"])
+        self.assertEqual(state["filter_urls"]["all"], "/dashboard/proxies?country=DE")
+        self.assertEqual(state["filter_urls"]["manual"], "/dashboard/proxies?source=manual&country=DE")
+        self.assertEqual(state["page_urls"][1], "/dashboard/proxies?source=manual&country=DE")
 
     def test_proxy_list_table_stays_inside_content_rail(self):
         translations = dict(web_admin.get_translations("en"))
@@ -707,10 +743,22 @@ class TestPublicApiRoutes(unittest.TestCase):
         self.assertEqual(json_response.status_code, 200)
         self.assertEqual(json_payload["title"], "ProxyPool Public API")
         self.assertTrue(any(item["path"] == "/api/v1/compat/bind" for item in json_payload["endpoints"]))
+        entries_endpoint = next(
+            item for item in json_payload["endpoints"] if item["path"] == "/api/v1/entries"
+        )
+        self.assertTrue(
+            any(param["name"] == "tag_country" for param in entries_endpoint["query_params"])
+        )
 
         openapi_payload = self._payload(openapi_response)
         self.assertEqual(openapi_response.status_code, 200)
         self.assertIn("/api/v1/compat/allocate", openapi_payload["paths"])
+        self.assertTrue(
+            any(
+                param["name"] == "tag_country"
+                for param in openapi_payload["paths"]["/api/v1/entries"]["get"]["parameters"]
+            )
+        )
 
     def test_resolve_username_is_public(self):
         response = self.client.get(
@@ -881,6 +929,51 @@ class TestPublicApiRoutes(unittest.TestCase):
             "http://127.0.0.1:33100",
         )
 
+    def test_entries_list_returns_persisted_tags_without_enrichment(self):
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry("e1", "host1.example.com", 10001, tags={"country": "US"}),
+                _make_entry("e2", "host2.example.com", 10002),
+            ],
+        )
+        response = self.client.get("/api/v1/entries")
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["data"]["items"][0]["tags"], {"country": "US"})
+        self.assertEqual(payload["data"]["items"][1]["tags"], {})
+        persisted = {entry.key: entry for entry in load_proxy_list(self.storage)}
+        self.assertEqual(persisted["e1"].tags, {"country": "US"})
+        self.assertEqual(persisted["e2"].tags, {})
+
+    def test_entries_list_does_not_mutate_storage_on_read(self):
+        response = self.client.get("/api/v1/entries")
+        self.assertEqual(response.status_code, 200)
+        persisted = {entry.key: entry for entry in load_proxy_list(self.storage)}
+        self.assertEqual(persisted["e1"].tags, {})
+        self.assertEqual(persisted["e2"].tags, {})
+
+    def test_entries_list_filters_by_country_tag(self):
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry("e1", "host1.example.com", 10001, tags={"country": "US"}),
+                _make_entry("e2", "host2.example.com", 10002, tags={"country": "DE"}),
+            ],
+        )
+
+        response = self.client.get(
+            "/api/v1/entries",
+            query_string={"tag_country": "de"},
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["data"]["count"], 1)
+        self.assertEqual(payload["data"]["items"][0]["entry_key"], "e2")
+        self.assertEqual(payload["data"]["filters"]["tags"], {"country": ["de"]})
+
     def test_allocate_and_unbind_cycle(self):
         first = self.client.post(
             "/api/v1/compat/allocate",
@@ -1012,6 +1105,7 @@ def _make_valid_config_form(**overrides):
         "AUTH_REALM": "Proxy",
         "UPSTREAM_CONNECT_TIMEOUT": "20.0",
         "UPSTREAM_CONNECT_RETRIES": "3",
+        "COUNTRY_DETECT_MAX_WORKERS": "4",
         "RELAY_TIMEOUT": "120.0",
         "REWRITE_LOOPBACK_TO_HOST": "auto",
         "HOST_LOOPBACK_ADDRESS": "host.docker.internal",
@@ -1054,6 +1148,11 @@ class TestValidateConfigForm(unittest.TestCase):
 
     def test_retries_below_one_rejected(self):
         form = _make_valid_config_form(UPSTREAM_CONNECT_RETRIES="0")
+        clean, errors = validate_config_form(form)
+        self.assertTrue(any("at least 1" in e.lower() for e in errors))
+
+    def test_country_detect_workers_below_one_rejected(self):
+        form = _make_valid_config_form(COUNTRY_DETECT_MAX_WORKERS="0")
         clean, errors = validate_config_form(form)
         self.assertTrue(any("at least 1" in e.lower() for e in errors))
 

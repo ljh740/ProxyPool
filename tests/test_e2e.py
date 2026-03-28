@@ -75,12 +75,18 @@ def _make_hop(host="proxy.example.com", port=10001, scheme="socks5"):
     )
 
 
-def _make_entry(key="test_1", host="proxy.example.com", port=10001,
-                source_tag="manual"):
+def _make_entry(
+    key="test_1",
+    host="proxy.example.com",
+    port=10001,
+    source_tag="manual",
+    tags=None,
+):
     hop = _make_hop(host=host, port=port)
     return UpstreamEntry(
         key=key, label=f"{host}:{port}", hops=(hop,),
         source_tag=source_tag, in_random_pool=True,
+        tags=tags or {},
     )
 
 
@@ -436,6 +442,7 @@ class TestE2E(unittest.TestCase):
         self._reset_storage()
         form = {f.env_key: f.default for f in config_center.CONFIG_PAGE_FIELDS}
         form["AUTH_PASSWORD"] = "new-secret"
+        form["COUNTRY_DETECT_MAX_WORKERS"] = "6"
         resp = self._post_with_csrf(
             "/dashboard/config/save",
             data=form,
@@ -447,6 +454,7 @@ class TestE2E(unittest.TestCase):
         # Verify persisted in storage
         loaded = persistence.load_config(self._storage)
         self.assertEqual(loaded.get("AUTH_PASSWORD"), "new-secret")
+        self.assertEqual(loaded.get("COUNTRY_DETECT_MAX_WORKERS"), "6")
         self.assertEqual(loaded.get("ADMIN_PASSWORD"), TEST_PASSWORD)
 
     def test_config_save_invalid_rejected(self):
@@ -689,6 +697,144 @@ class TestE2E(unittest.TestCase):
         self.assertIn("ti-filter-off", filtered.text)
         self.assertNotIn("ti-server-off", filtered.text)
         self.assertNotIn("manual-only.example.com", filtered.text)
+
+    def test_proxy_country_filter_limits_rows(self):
+        self._login()
+        self._reset_storage()
+        persistence.save_proxy_list(
+            self._storage,
+            [
+                _make_entry("us_only", "us-only.example.com", 12001, tags={"country": "US"}),
+                _make_entry("de_only", "de-only.example.com", 12002, tags={"country": "DE"}),
+                _make_entry("no_country", "no-country.example.com", 12003),
+            ],
+        )
+
+        filtered = self.session.get(self.base_url + "/dashboard/proxies?country=DE")
+
+        self.assertEqual(filtered.status_code, 200)
+        self.assertIn("de-only.example.com", filtered.text)
+        self.assertNotIn("us-only.example.com", filtered.text)
+        self.assertNotIn("no-country.example.com", filtered.text)
+        self.assertIn('value="DE" selected', filtered.text)
+
+    def test_ajax_country_detection_job_updates_storage(self):
+        self._login()
+        self._reset_storage()
+        persistence.save_proxy_list(
+            self._storage,
+            [
+                _make_entry("detect-us", "detect-us.example.com", 12001),
+                _make_entry("detect-de", "detect-de.example.com", 12002),
+                _make_entry("keep-fr", "keep-fr.example.com", 12003, tags={"country": "FR"}),
+            ],
+        )
+        csrf_token = self._csrf_token_for("/dashboard/proxies")
+
+        with patch.object(
+            proxy_routes,
+            "resolve_entry_country_tag",
+            side_effect=["US", "DE"],
+        ):
+            start_resp = self.session.post(
+                self.base_url + "/dashboard/proxies/tags/country/detect",
+                headers={"X-Requested-With": "XMLHttpRequest"},
+                data={
+                    "csrf_token": csrf_token,
+                    "detect_missing_only": "1",
+                },
+            )
+            self.assertEqual(start_resp.status_code, 200)
+            start_payload = start_resp.json()
+            self.assertTrue(start_payload["ok"])
+            self.assertEqual(start_payload["job"]["total"], 2)
+            job_id = start_payload["job"]["job_id"]
+
+            status_payload = None
+            for _ in range(40):
+                status_resp = self.session.get(
+                    self.base_url + f"/dashboard/proxies/tags/country/detect/{job_id}",
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                )
+                self.assertEqual(status_resp.status_code, 200)
+                status_payload = status_resp.json()
+                if status_payload["job"]["status"] == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertIsNotNone(status_payload)
+        self.assertEqual(status_payload["job"]["status"], "completed")
+        self.assertEqual(status_payload["job"]["success_count"], 2)
+        self.assertEqual(status_payload["job"]["updated_count"], 2)
+        saved_entries = {entry.key: entry for entry in persistence.load_proxy_list(self._storage)}
+        self.assertEqual(saved_entries["detect-us"].tags, {"country": "US"})
+        self.assertEqual(saved_entries["detect-de"].tags, {"country": "DE"})
+        self.assertEqual(saved_entries["keep-fr"].tags, {"country": "FR"})
+
+    def test_ajax_country_detection_persists_each_result_as_it_completes(self):
+        self._login()
+        self._reset_storage()
+        persistence.save_proxy_list(
+            self._storage,
+            [
+                _make_entry("detect-us", "detect-us.example.com", 12001),
+                _make_entry("detect-de", "detect-de.example.com", 12002),
+            ],
+        )
+        csrf_token = self._csrf_token_for("/dashboard/proxies")
+
+        def _resolve_country(_app_config, entry):
+            if entry.key == "detect-us":
+                time.sleep(0.05)
+                return "US"
+            time.sleep(0.35)
+            return "DE"
+
+        with patch.object(
+            proxy_routes,
+            "resolve_entry_country_tag",
+            side_effect=_resolve_country,
+        ):
+            start_resp = self.session.post(
+                self.base_url + "/dashboard/proxies/tags/country/detect",
+                headers={"X-Requested-With": "XMLHttpRequest"},
+                data={
+                    "csrf_token": csrf_token,
+                    "detect_missing_only": "1",
+                },
+            )
+            self.assertEqual(start_resp.status_code, 200)
+            job_id = start_resp.json()["job"]["job_id"]
+
+            saw_partial_persist = False
+            for _ in range(20):
+                saved_entries = {entry.key: entry for entry in persistence.load_proxy_list(self._storage)}
+                if (
+                    saved_entries["detect-us"].tags == {"country": "US"}
+                    and saved_entries["detect-de"].tags == {}
+                ):
+                    saw_partial_persist = True
+                    break
+                time.sleep(0.05)
+
+            status_payload = None
+            for _ in range(40):
+                status_resp = self.session.get(
+                    self.base_url + f"/dashboard/proxies/tags/country/detect/{job_id}",
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                )
+                self.assertEqual(status_resp.status_code, 200)
+                status_payload = status_resp.json()
+                if status_payload["job"]["status"] == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertTrue(saw_partial_persist)
+        self.assertIsNotNone(status_payload)
+        self.assertEqual(status_payload["job"]["status"], "completed")
+        saved_entries = {entry.key: entry for entry in persistence.load_proxy_list(self._storage)}
+        self.assertEqual(saved_entries["detect-us"].tags, {"country": "US"})
+        self.assertEqual(saved_entries["detect-de"].tags, {"country": "DE"})
 
     def test_add_proxy_success(self):
         self._login()

@@ -141,6 +141,7 @@
 - `GET /api/v1/resolve?entry_key=<key>`
 - `GET /api/v1/resolve?listen_port=<port>`
 - `GET /api/v1/entries`
+  - 支持按标签过滤，例如 `tag_country=US`
 - `GET /api/v1/compat/mappings`
 - `POST /api/v1/compat/bind`
 - `POST /api/v1/compat/allocate`
@@ -151,6 +152,7 @@
 示例：
 - `curl 'http://127.0.0.1:8077/api'`
 - `curl 'http://127.0.0.1:8077/api/v1/resolve?username=browser-a'`
+- `curl 'http://127.0.0.1:8077/api/v1/entries?tag_country=US'`
 - `curl -H 'Content-Type: application/json' -d '{"username":"browser-a"}' http://127.0.0.1:8077/api/v1/compat/bind`
 - `curl -X POST http://127.0.0.1:8077/api/v1/compat/allocate`
 

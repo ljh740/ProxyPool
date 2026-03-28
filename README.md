@@ -137,6 +137,7 @@ The actual callable endpoints live under `/api/v1`:
 - `GET /api/v1/resolve?entry_key=<key>`
 - `GET /api/v1/resolve?listen_port=<port>`
 - `GET /api/v1/entries`
+  - Supports tag filters such as `tag_country=US`
 - `GET /api/v1/compat/mappings`
 - `POST /api/v1/compat/bind`
 - `POST /api/v1/compat/allocate`
@@ -147,6 +148,7 @@ These endpoints are unauthenticated by design, which makes them convenient for l
 Examples:
 - `curl 'http://127.0.0.1:8077/api'`
 - `curl 'http://127.0.0.1:8077/api/v1/resolve?username=browser-a'`
+- `curl 'http://127.0.0.1:8077/api/v1/entries?tag_country=US'`
 - `curl -H 'Content-Type: application/json' -d '{"username":"browser-a"}' http://127.0.0.1:8077/api/v1/compat/bind`
 - `curl -X POST http://127.0.0.1:8077/api/v1/compat/allocate`
 

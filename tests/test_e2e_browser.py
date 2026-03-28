@@ -75,12 +75,18 @@ def _make_hop(host="proxy.example.com", port=10001, scheme="socks5"):
     )
 
 
-def _make_entry(key="test_1", host="proxy.example.com", port=10001,
-                source_tag="manual"):
+def _make_entry(
+    key="test_1",
+    host="proxy.example.com",
+    port=10001,
+    source_tag="manual",
+    tags=None,
+):
     hop = _make_hop(host=host, port=port)
     return UpstreamEntry(
         key=key, label=f"{host}:{port}", hops=(hop,),
         source_tag=source_tag, in_random_pool=True,
+        tags=tags or {},
     )
 
 
@@ -602,11 +608,17 @@ class TestE2EBrowser(unittest.TestCase):
         self.page.click('button[type="submit"]')
         self.page.wait_for_url("**/dashboard/proxies**")
 
-        self.assertTrue(
-            self.page.locator('tr[data-source="manual"] td.pp-proxy-label:has-text("browser-import.example.com")').is_visible()
+        imported_row = self.page.locator(
+            'tr[data-source="manual"] td.pp-proxy-label:has-text("browser-import.example.com")'
+        )
+        chain_row = self.page.locator(
+            'tr[data-source="manual"] td.pp-proxy-label:has-text("browser-chain.example.com")'
         )
         self.assertTrue(
-            self.page.locator('tr[data-source="manual"] td.pp-proxy-label:has-text("browser-chain.example.com")').is_visible()
+            imported_row.is_visible()
+        )
+        self.assertTrue(
+            chain_row.is_visible()
         )
         saved_entries = {entry.last_hop.host: entry for entry in persistence.load_proxy_list(self._storage)}
         self.assertEqual(saved_entries["browser-import.example.com"].source_tag, "manual")
@@ -644,7 +656,10 @@ class TestE2EBrowser(unittest.TestCase):
             self.page.click('button[type="submit"]')
             self.page.wait_for_selector("#import-check-modal.show")
             self.page.wait_for_function(
-                "() => document.getElementById('import-check-commit') && !document.getElementById('import-check-commit').disabled"
+                "() => {"
+                " const btn = document.getElementById('import-check-commit');"
+                " return btn && !btn.disabled;"
+                " }"
             )
             self.assertTrue(self.page.locator("text=checked-ok.example.com").count() > 0)
             self.assertTrue(self.page.locator("text=checked-bad.example.com").count() > 0)
@@ -764,10 +779,51 @@ class TestE2EBrowser(unittest.TestCase):
         self.assertEqual(button.text_content().strip(), "ON")
         button.click()
         self.page.wait_for_function(
-            "() => { const btn = document.querySelector('form[action=\"/dashboard/proxies/ajax_pool/toggle-pool\"] .pp-pool-toggle-btn'); return btn && btn.textContent.trim() === 'OFF'; }"
+            "() => {"
+            " const btn = document.querySelector("
+            "   'form[action=\"/dashboard/proxies/ajax_pool/toggle-pool\"] .pp-pool-toggle-btn'"
+            " );"
+            " return btn && btn.textContent.trim() === 'OFF';"
+            " }"
         )
         self.assertEqual(self.page.url, current_url)
         self.assertFalse(persistence.load_proxy_list(self._storage)[0].in_random_pool)
+
+    def test_country_detect_button_updates_tag_badge(self):
+        """Country detection button refreshes the row and shows the detected tag."""
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("detect_country", "detect-country.example.com", 12010, source_tag="manual")
+        persistence.save_proxy_list(self._storage, [entry])
+        self.page.goto(f"{self.base_url}/dashboard/proxies")
+
+        with patch.object(proxy_routes, "resolve_entry_country_tag", return_value="US"):
+            self.page.click('button.pp-detect-country-btn[data-key="detect_country"]')
+            self.page.wait_for_selector("text=country: US", timeout=5000)
+
+        saved_entry = persistence.load_proxy_list(self._storage)[0]
+        self.assertEqual(saved_entry.tags, {"country": "US"})
+
+    def test_detect_missing_country_works_on_empty_filtered_view(self):
+        """Missing-country detection still works when the current filter has no visible rows."""
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("manual_missing", "manual-missing.example.com", 12011, source_tag="manual")
+        persistence.save_proxy_list(self._storage, [entry])
+        self.page.goto(f"{self.base_url}/dashboard/proxies?source=auto")
+
+        self.assertEqual(self.page.locator("#select-all").count(), 0)
+        self.assertTrue(self.page.locator("#detect-missing-country-btn").is_visible())
+
+        with patch.object(proxy_routes, "resolve_entry_country_tag", return_value="US"):
+            self.page.click("#detect-missing-country-btn")
+            self.page.wait_for_url(
+                re.compile(r".*/dashboard/proxies\?source=auto.*msg=.*"),
+                timeout=5000,
+            )
+
+        saved_entry = persistence.load_proxy_list(self._storage)[0]
+        self.assertEqual(saved_entry.tags, {"country": "US"})
 
     # ====================================================================
     # Tier 6: Batch Operations
@@ -831,7 +887,7 @@ class TestE2EBrowser(unittest.TestCase):
         self.page.goto(f"{self.base_url}/dashboard/proxies")
 
         self.page.locator(".row-check").nth(0).check()
-        self.page.click('button[onclick="batchTogglePool(\'off\')"]')
+        self.page.click('button[data-batch-action="toggle-pool"][data-pool-state="off"]')
         self.page.wait_for_url("**/dashboard/proxies**")
 
         saved_entries = {entry.key: entry for entry in persistence.load_proxy_list(self._storage)}
@@ -853,7 +909,7 @@ class TestE2EBrowser(unittest.TestCase):
         self.page.locator(".row-check").nth(0).check()
         self.page.locator(".row-check").nth(1).check()
         self.page.on("dialog", lambda dialog: dialog.accept())
-        self.page.click('button[onclick="batchDelete()"]')
+        self.page.click('button[data-batch-action="delete"]')
         self.page.wait_for_url("**/dashboard/proxies**")
 
         remaining = persistence.load_proxy_list(self._storage)
