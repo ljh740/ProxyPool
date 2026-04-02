@@ -1,7 +1,8 @@
 <div class="pp-page-header">
   <h2>{{ i.config_title }}</h2>
 </div>
-<form method="post" action="/dashboard/config/save" id="config-form" onsubmit="setLoading(this.querySelector('.btn-primary'))">
+<div id="config-form-i18n" data-request-failed="{{ i.feedback_request_failed }}" hidden></div>
+<form method="post" action="/dashboard/config/save" id="config-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   {% for section in sections %}
   <div class="card mb-3" id="group-{{ section.key }}">

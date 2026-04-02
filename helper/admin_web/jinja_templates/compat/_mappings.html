@@ -1,0 +1,78 @@
+<div class="card mt-3">
+  <div class="card-header" style="padding:0.9rem 1.25rem;">
+    <h3 class="card-title" style="margin:0;font-size:0.95rem;">
+      <i class="ti ti-list me-1"></i>{{ i.compat_existing_title }}
+    </h3>
+  </div>
+  {% if mappings %}
+  <div class="table-responsive">
+    <table class="table table-vcenter table-striped card-table">
+      <thead>
+        <tr>
+          <th>{{ i.compat_table_port }}</th>
+          <th>{{ i.compat_table_target_type }}</th>
+          <th>{{ i.compat_table_target_value }}</th>
+          <th>{{ i.compat_table_status }}</th>
+          <th>{{ i.compat_table_note }}</th>
+          <th>{{ i.compat_table_actions }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for mapping in mappings %}
+        <tr>
+          <td><code>{{ mapping.listen_port }}</code></td>
+          <td>
+            {% if mapping.target_type == 'entry_key' %}
+            {{ i.compat_target_type_entry_key }}
+            {% else %}
+            {{ i.compat_target_type_session_name }}
+            {% endif %}
+          </td>
+          <td><code>{{ mapping.target_value }}</code></td>
+          <td>
+            {% if mapping.enabled %}
+            <span class="pp-badge pp-badge-success">{{ i.compat_status_enabled }}</span>
+            {% else %}
+            <span class="pp-badge pp-badge-warning">{{ i.compat_status_disabled }}</span>
+            {% endif %}
+          </td>
+          <td>{{ mapping.note or "-" }}</td>
+          <td>
+            <div class="btn-list flex-nowrap" style="gap:0.25rem;">
+              <button type="button"
+                      class="btn btn-sm pp-compat-edit-btn"
+                      data-listen-port="{{ mapping.listen_port }}"
+                      data-target-type="{{ mapping.target_type }}"
+                      data-target-value="{{ mapping.target_value }}"
+                      data-note="{{ mapping.note }}"
+                      data-enabled="{{ '1' if mapping.enabled else '0' }}"
+                      style="border:1px solid var(--pp-border);color:var(--pp-text);font-size:0.8rem">
+                {{ i.compat_btn_edit }}
+              </button>
+              <form method="post"
+                    action="/dashboard/compat/{{ mapping.listen_port }}/delete"
+                    class="pp-compat-delete-form"
+                    style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="btn btn-sm"
+                        style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none;font-size:0.8rem"
+                        onclick="return confirm('{{ i.compat_delete_confirm }}')">
+                  <span class="pp-btn-text">{{ i.compat_btn_delete }}</span>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body" style="padding:2rem 1.5rem;text-align:center;">
+    <div style="font-size:2rem;color:var(--pp-text-muted);margin-bottom:0.75rem;"><i class="ti ti-plug-x"></i></div>
+    <div style="font-weight:600;">{{ i.compat_empty_title }}</div>
+    <div style="margin-top:0.35rem;color:var(--pp-text-secondary);">{{ i.compat_empty_subtitle }}</div>
+  </div>
+  {% endif %}
+</div>

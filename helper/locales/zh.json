@@ -326,6 +326,7 @@
   "feedback_saving": "保存中...",
   "feedback_loading": "加载中...",
   "feedback_deleting": "删除中...",
+  "feedback_request_failed": "请求失败",
   "login_setup_required": "请先创建管理员密码。",
   "setup_title": "创建管理员密码",
   "setup_intro": "这是 ProxyPool Web Admin 的首次启动，请先创建管理员密码后再进入管理后台。",

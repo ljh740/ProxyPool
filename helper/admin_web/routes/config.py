@@ -14,7 +14,10 @@ from config_center import (
 from i18n import get_translations, t
 from persistence import save_config
 
+from .. import resources as admin_resources
 from ..app_runtime import build_redirect_location
+from ..http import is_ajax_request as _is_ajax_request
+from ..http import json_response as _json_response
 from ..server import ReloadRejectedError
 
 LOGGER = logging.getLogger("web_admin")
@@ -151,12 +154,15 @@ def register_config_routes(blueprint, runtime):
             content=content,
             active_nav="nav_configuration",
             ui=ui,
+            extra_scripts=admin_resources.load_template_source("config/scripts.js"),
         )
 
     @blueprint.post("/dashboard/config/save")
     def config_save():
         guard = runtime.require_admin()
         if guard is not None:
+            if _is_ajax_request():
+                return _json_response({"ok": False, "error": "unauthorized"}, status=401)
             return guard
 
         ui = runtime.resolve_ui_state()
@@ -174,10 +180,16 @@ def register_config_routes(blueprint, runtime):
             ),
         )
         if errors:
+            error_message = "; ".join(errors)
+            if _is_ajax_request():
+                return _json_response(
+                    {"ok": False, "error": error_message},
+                    status=400,
+                )
             return runtime.redirect(
                 build_redirect_location(
                     "/dashboard/config",
-                    msg="; ".join(errors),
+                    msg=error_message,
                     type="error",
                 ),
                 ui=ui,
@@ -192,18 +204,27 @@ def register_config_routes(blueprint, runtime):
             runtime.trigger_reload(raise_on_error=True)
         except ReloadRejectedError as exc:
             LOGGER.warning("Configuration saved but reload was rejected: %s", exc)
+            error_message = _format_reload_error(ui.locale, exc)
+            if _is_ajax_request():
+                return _json_response(
+                    {"ok": False, "error": error_message},
+                    status=409,
+                )
             return runtime.redirect(
                 build_redirect_location(
                     "/dashboard/config",
-                    msg=_format_reload_error(ui.locale, exc),
+                    msg=error_message,
                     type="error",
                 ),
                 ui=ui,
             )
+        success_message = t("config_saved", ui.locale)
+        if _is_ajax_request():
+            return _json_response({"ok": True, "message": success_message})
         return runtime.redirect(
             build_redirect_location(
                 "/dashboard/config",
-                msg=t("config_saved", ui.locale),
+                msg=success_message,
                 type="success",
             ),
             ui=ui,

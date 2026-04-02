@@ -1,7 +1,6 @@
 """Proxy-management routes for the admin Flask app."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
 import math
 import threading
 import time
@@ -9,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import quote as _url_quote
 
-from flask import Response, render_template, request
+from flask import render_template, request
 
 from i18n import get_translations, t
 from persistence import load_batch_params, save_batch_params
@@ -32,6 +31,8 @@ from upstream_pool import (
 
 from .. import resources as admin_resources
 from ..app_runtime import build_redirect_location
+from ..http import is_ajax_request as _is_ajax_request
+from ..http import json_response as _json_response
 
 IMPORT_CHECK_TARGET_HOST = "example.com"
 IMPORT_CHECK_TARGET_PORT = 443
@@ -409,19 +410,6 @@ def _append_manual_entries(existing_entries, new_entries):
         existing_keys.add(normalized.key)
         imported_count += 1
     return merged, imported_count
-
-
-def _is_ajax_request():
-    return request.headers.get("X-Requested-With") == "XMLHttpRequest"
-
-
-def _json_response(payload, status=200):
-    return Response(
-        json.dumps(payload),
-        status=status,
-        mimetype="application/json",
-    )
-
 
 def _build_import_form_data():
     return {

@@ -351,5 +351,6 @@
 
   "feedback_saving": "Saving...",
   "feedback_loading": "Loading...",
-  "feedback_deleting": "Deleting..."
+  "feedback_deleting": "Deleting...",
+  "feedback_request_failed": "Request failed"
 }

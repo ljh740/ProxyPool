@@ -41,6 +41,7 @@ function dismissToast(el){
 }
 function setLoading(btn){
   if(!btn)return;
+  btn.dataset.prevDisabled=btn.disabled?"1":"0";
   btn.classList.add("pp-loading");
   btn.disabled=true;
   var spans=btn.querySelectorAll(":not(.pp-btn-text)");
@@ -51,6 +52,49 @@ function setLoading(btn){
     while(btn.firstChild)s.appendChild(btn.firstChild);
     btn.appendChild(s);
   }
+}
+function clearLoading(btn){
+  if(!btn)return;
+  btn.classList.remove("pp-loading");
+  btn.disabled=btn.dataset.prevDisabled==="1";
+  delete btn.dataset.prevDisabled;
+}
+async function readAdminPayload(response,fallbackMessage){
+  var text=await response.text();
+  if(!text)return {};
+  try{
+    return JSON.parse(text);
+  }catch(_err){
+    throw new Error(fallbackMessage||"Request failed");
+  }
+}
+function adminPayloadError(payload,fallbackMessage){
+  if(payload&&typeof payload.error==="string"&&payload.error)return payload.error;
+  if(payload&&payload.error&&typeof payload.error.message==="string"&&payload.error.message)return payload.error.message;
+  if(payload&&typeof payload.message==="string"&&payload.message)return payload.message;
+  return fallbackMessage||"Request failed";
+}
+async function adminFetch(url,options,fallbackMessage){
+  options=options||{};
+  var headers=new Headers(options.headers||{});
+  if(!headers.has("X-Requested-With"))headers.set("X-Requested-With","XMLHttpRequest");
+  var fetchOptions={method:options.method||"GET",headers:headers};
+  if(Object.prototype.hasOwnProperty.call(options,"body"))fetchOptions.body=options.body;
+  if(Object.prototype.hasOwnProperty.call(options,"credentials"))fetchOptions.credentials=options.credentials;
+  var response=await fetch(url,fetchOptions);
+  var payload=await readAdminPayload(response,fallbackMessage);
+  if(!response.ok||payload.ok===false){
+    var error=new Error(adminPayloadError(payload,fallbackMessage));
+    error.payload=payload;
+    throw error;
+  }
+  return payload;
+}
+function adminPostForm(form,fallbackMessage){
+  return adminFetch(form.action,{
+    method:"POST",
+    body:new FormData(form)
+  },fallbackMessage);
 }
 (function(){
   var params=new URLSearchParams(window.location.search);

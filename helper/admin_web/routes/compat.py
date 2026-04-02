@@ -13,6 +13,8 @@ from i18n import get_translations, t
 
 from .. import resources as admin_resources
 from ..app_runtime import build_redirect_location
+from ..http import is_ajax_request as _is_ajax_request
+from ..http import json_response as _json_response
 
 
 def _compat_form_state(mapping=None):
@@ -37,11 +39,12 @@ def _compat_form_state(mapping=None):
     }
 
 
-def _build_compat_page_context(locale, mappings, entries, *, form_state=None, error=""):
+def _build_compat_form_context(locale, entries, *, form_state=None, error=""):
     state = _compat_form_state()
     if form_state is not None:
         state.update(form_state)
 
+    translations = get_translations(locale)
     target_type = state["target_type"]
     target_hint = (
         t("compat_form_target_hint_entry_key", locale)
@@ -49,7 +52,6 @@ def _build_compat_page_context(locale, mappings, entries, *, form_state=None, er
         else t("compat_form_target_hint_session_name", locale)
     )
     return {
-        "mappings": mappings,
         "entry_options": entries,
         "target_types": [
             {
@@ -76,8 +78,56 @@ def _build_compat_page_context(locale, mappings, entries, *, form_state=None, er
         ),
         "target_hint": target_hint,
         "error": error,
-        "i": get_translations(locale),
+        "i": translations,
     }
+
+
+def _build_compat_page_context(locale, mappings, entries, *, form_state=None, error=""):
+    context = _build_compat_form_context(
+        locale,
+        entries,
+        form_state=form_state,
+        error=error,
+    )
+    context["mappings"] = mappings
+    return context
+
+
+def _render_compat_form_html(locale, entries, *, form_state=None, error=""):
+    return render_template(
+        "compat/_form.html",
+        **_build_compat_form_context(
+            locale,
+            entries,
+            form_state=form_state,
+            error=error,
+        ),
+    )
+
+
+def _render_compat_mappings_html(locale, mappings):
+    return render_template(
+        "compat/_mappings.html",
+        mappings=mappings,
+        i=get_translations(locale),
+    )
+
+
+def _compat_ajax_payload(locale, entries, mappings, *, form_state=None, error="", message=None):
+    payload = {
+        "form_html": _render_compat_form_html(
+            locale,
+            entries,
+            form_state=form_state,
+            error=error,
+        ),
+        "mappings_html": _render_compat_mappings_html(locale, mappings),
+    }
+    if message:
+        payload["message"] = message
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _render_compat_page(runtime, ui, *, mappings, entries, form_state=None, error=""):
@@ -136,6 +186,8 @@ def register_compat_routes(blueprint, runtime):
     def compat_save():
         guard = runtime.require_admin()
         if guard is not None:
+            if _is_ajax_request():
+                return _json_response({"ok": False, "error": "unauthorized"}, status=401)
             return guard
 
         ui = runtime.resolve_ui_state()
@@ -158,49 +210,45 @@ def register_compat_routes(blueprint, runtime):
             "edit_mode": bool(original_listen_port),
         }
 
+        def _render_error_response(error_message, *, status=400):
+            if _is_ajax_request():
+                return _json_response(
+                    {
+                        "ok": False,
+                        **_compat_ajax_payload(
+                            ui.locale,
+                            entries,
+                            mappings,
+                            form_state=form_state,
+                            error=error_message,
+                        ),
+                    },
+                    status=status,
+                )
+            return _render_compat_page(
+                runtime,
+                ui,
+                mappings=mappings,
+                entries=entries,
+                form_state=form_state,
+                error=error_message,
+            )
+
         original_port = None
         if original_listen_port:
             try:
                 original_port = int(original_listen_port)
             except ValueError:
-                return _render_compat_page(
-                    runtime,
-                    ui,
-                    mappings=mappings,
-                    entries=entries,
-                    form_state=form_state,
-                    error=t("compat_not_found", ui.locale),
-                )
+                return _render_error_response(t("compat_not_found", ui.locale), status=404)
 
             if not any(mapping.listen_port == original_port for mapping in mappings):
-                return _render_compat_page(
-                    runtime,
-                    ui,
-                    mappings=mappings,
-                    entries=entries,
-                    form_state=form_state,
-                    error=t("compat_not_found", ui.locale),
-                )
+                return _render_error_response(t("compat_not_found", ui.locale), status=404)
 
         if target_type not in TARGET_TYPES:
-            return _render_compat_page(
-                runtime,
-                ui,
-                mappings=mappings,
-                entries=entries,
-                form_state=form_state,
-                error=t("compat_invalid_target_type", ui.locale),
-            )
+            return _render_error_response(t("compat_invalid_target_type", ui.locale))
 
         if target_type == TARGET_TYPE_ENTRY_KEY and not any(entry.key == target_value for entry in entries):
-            return _render_compat_page(
-                runtime,
-                ui,
-                mappings=mappings,
-                entries=entries,
-                form_state=form_state,
-                error=t("compat_entry_missing", ui.locale),
-            )
+            return _render_error_response(t("compat_entry_missing", ui.locale))
 
         if (
             original_port is not None
@@ -208,14 +256,7 @@ def register_compat_routes(blueprint, runtime):
             and int(listen_port) != original_port
             and any(mapping.listen_port == int(listen_port) for mapping in mappings)
         ):
-            return _render_compat_page(
-                runtime,
-                ui,
-                mappings=mappings,
-                entries=entries,
-                form_state=form_state,
-                error=t("compat_port_conflict", ui.locale),
-            )
+            return _render_error_response(t("compat_port_conflict", ui.locale), status=409)
 
         try:
             mapping = CompatPortMapping(
@@ -226,18 +267,13 @@ def register_compat_routes(blueprint, runtime):
                 note=note,
             )
         except (TypeError, ValueError):
-            return _render_compat_page(
-                runtime,
-                ui,
-                mappings=mappings,
-                entries=entries,
-                form_state=form_state,
-                error=t(
+            return _render_error_response(
+                t(
                     "compat_invalid_mapping",
                     ui.locale,
                     min=COMPAT_PORT_MIN,
                     max=COMPAT_PORT_MAX,
-                ),
+                )
             )
 
         updated = [
@@ -247,10 +283,18 @@ def register_compat_routes(blueprint, runtime):
         updated.sort(key=lambda item: item.listen_port)
         runtime.save_compat_mappings(updated, storage)
         runtime.trigger_reload()
+        success_message = t("compat_saved", ui.locale)
+        if _is_ajax_request():
+            return _json_response(
+                {
+                    "ok": True,
+                    **_compat_ajax_payload(ui.locale, entries, updated, message=success_message),
+                }
+            )
         return runtime.redirect(
             build_redirect_location(
                 "/dashboard/compat",
-                msg=t("compat_saved", ui.locale),
+                msg=success_message,
                 type="success",
             ),
             ui=ui,
@@ -260,14 +304,22 @@ def register_compat_routes(blueprint, runtime):
     def compat_delete(listen_port):
         guard = runtime.require_admin()
         if guard is not None:
+            if _is_ajax_request():
+                return _json_response({"ok": False, "error": "unauthorized"}, status=401)
             return guard
 
         ui = runtime.resolve_ui_state()
         storage = runtime.get_storage()
         mappings = list(runtime.load_compat_mappings(storage))
+        entries = list(runtime.load_entries(storage))
         try:
             port = int(listen_port)
         except ValueError:
+            if _is_ajax_request():
+                return _json_response(
+                    {"ok": False, "error": t("compat_not_found", ui.locale)},
+                    status=404,
+                )
             return runtime.redirect(
                 build_redirect_location(
                     "/dashboard/compat",
@@ -279,6 +331,11 @@ def register_compat_routes(blueprint, runtime):
 
         updated = [mapping for mapping in mappings if mapping.listen_port != port]
         if len(updated) == len(mappings):
+            if _is_ajax_request():
+                return _json_response(
+                    {"ok": False, "error": t("compat_not_found", ui.locale)},
+                    status=404,
+                )
             return runtime.redirect(
                 build_redirect_location(
                     "/dashboard/compat",
@@ -290,10 +347,18 @@ def register_compat_routes(blueprint, runtime):
 
         runtime.save_compat_mappings(updated, storage)
         runtime.trigger_reload()
+        success_message = t("compat_deleted", ui.locale)
+        if _is_ajax_request():
+            return _json_response(
+                {
+                    "ok": True,
+                    **_compat_ajax_payload(ui.locale, entries, updated, message=success_message),
+                }
+            )
         return runtime.redirect(
             build_redirect_location(
                 "/dashboard/compat",
-                msg=t("compat_deleted", ui.locale),
+                msg=success_message,
                 type="success",
             ),
             ui=ui,

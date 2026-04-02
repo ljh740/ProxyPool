@@ -1,3 +1,8 @@
+<div id="compat-page-i18n"
+     data-request-failed="{{ i.feedback_request_failed }}"
+     data-save-label="{{ i.compat_form_save }}"
+     data-update-label="{{ i.compat_form_update }}"
+     hidden></div>
 <div class="pp-page-header">
   <div class="pp-page-header-row">
     <div>
@@ -9,68 +14,8 @@
   </div>
 </div>
 <div class="row row-cards" style="--tblr-gutter-x:1rem;">
-  <div class="col-lg-5">
-    <div class="card">
-      <div class="card-header" style="padding:0.9rem 1.25rem;">
-        <h3 class="card-title" style="margin:0;font-size:0.95rem;">
-          <i class="ti ti-plug-connected me-1"></i>{{ i.compat_form_title }}
-        </h3>
-      </div>
-      <div class="card-body" style="padding:1.25rem;">
-        {% if error %}
-        <div class="alert alert-danger" style="border-radius:6px;">{{ error }}</div>
-        {% endif %}
-        <form method="post" action="/dashboard/compat/save" onsubmit="setLoading(this.querySelector('.btn-primary'))">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="original_listen_port" value="{{ original_listen_port }}">
-          <div class="mb-3">
-            <label class="form-label" for="listen_port">{{ i.compat_form_port }}</label>
-            <input type="number" class="form-control" id="listen_port" name="listen_port"
-                   min="{{ port_min }}" max="{{ port_max }}" value="{{ listen_port }}" required>
-            <span class="form-hint">{{ i.compat_form_port_hint }}</span>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="target_type">{{ i.compat_form_target_type }}</label>
-            <select class="form-select" id="target_type" name="target_type">
-              {% for item in target_types %}
-              <option value="{{ item.value }}" {% if target_type == item.value %}selected{% endif %}>{{ item.label }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="target_value">{{ i.compat_form_target_value }}</label>
-            <input type="text" class="form-control" id="target_value" name="target_value"
-                   value="{{ target_value }}" list="compat-entry-keys" required>
-            <span class="form-hint" id="compat-target-hint"
-                  data-entry-key-hint="{{ i.compat_form_target_hint_entry_key }}"
-                  data-session-name-hint="{{ i.compat_form_target_hint_session_name }}">
-              {{ target_hint }}
-            </span>
-            <datalist id="compat-entry-keys">
-              {% for entry in entry_options %}
-              <option value="{{ entry.key }}">{{ entry.label }}</option>
-              {% endfor %}
-            </datalist>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="note">{{ i.compat_form_note }}</label>
-            <input type="text" class="form-control" id="note" name="note" value="{{ note }}">
-          </div>
-          <label class="form-check mb-3" style="display:flex;align-items:center;gap:0.6rem;">
-            <input class="form-check-input" type="checkbox" name="enabled" value="1" {% if enabled %}checked{% endif %}>
-            <span class="form-check-label">{{ i.compat_form_enabled }}</span>
-          </label>
-          <div class="d-flex gap-2 flex-wrap">
-            <button type="submit" class="btn btn-primary">
-              <span class="pp-btn-text"><i class="ti ti-device-floppy me-1"></i>{{ submit_label }}</span>
-            </button>
-            {% if edit_mode %}
-            <a href="/dashboard/compat" class="btn" style="border:1px solid var(--pp-border);color:var(--pp-text)">{{ i.compat_form_cancel_edit }}</a>
-            {% endif %}
-          </div>
-        </form>
-      </div>
-    </div>
+  <div class="col-lg-5" id="compat-form-panel">
+    {% include "compat/_form.html" %}
   </div>
   <div class="col-lg-7">
     <div class="card">
@@ -96,70 +41,6 @@
     </div>
   </div>
 </div>
-<div class="card mt-3">
-  <div class="card-header" style="padding:0.9rem 1.25rem;">
-    <h3 class="card-title" style="margin:0;font-size:0.95rem;">
-      <i class="ti ti-list me-1"></i>{{ i.compat_existing_title }}
-    </h3>
-  </div>
-  {% if mappings %}
-  <div class="table-responsive">
-    <table class="table table-vcenter table-striped card-table">
-      <thead>
-        <tr>
-          <th>{{ i.compat_table_port }}</th>
-          <th>{{ i.compat_table_target_type }}</th>
-          <th>{{ i.compat_table_target_value }}</th>
-          <th>{{ i.compat_table_status }}</th>
-          <th>{{ i.compat_table_note }}</th>
-          <th>{{ i.compat_table_actions }}</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for mapping in mappings %}
-        <tr>
-          <td><code>{{ mapping.listen_port }}</code></td>
-          <td>
-            {% if mapping.target_type == 'entry_key' %}
-            {{ i.compat_target_type_entry_key }}
-            {% else %}
-            {{ i.compat_target_type_session_name }}
-            {% endif %}
-          </td>
-          <td><code>{{ mapping.target_value }}</code></td>
-          <td>
-            {% if mapping.enabled %}
-            <span class="pp-badge pp-badge-success">{{ i.compat_status_enabled }}</span>
-            {% else %}
-            <span class="pp-badge pp-badge-warning">{{ i.compat_status_disabled }}</span>
-            {% endif %}
-          </td>
-          <td>{{ mapping.note or "-" }}</td>
-          <td>
-            <div class="btn-list flex-nowrap" style="gap:0.25rem;">
-              <a href="/dashboard/compat?edit={{ mapping.listen_port }}" class="btn btn-sm"
-                 style="border:1px solid var(--pp-border);color:var(--pp-text);font-size:0.8rem">{{ i.compat_btn_edit }}</a>
-              <form method="post" action="/dashboard/compat/{{ mapping.listen_port }}/delete" style="display:inline"
-                    onsubmit="setLoading(this.querySelector('button'))">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-sm"
-                        style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none;font-size:0.8rem"
-                        onclick="return confirm('{{ i.compat_delete_confirm }}')">
-                  <span class="pp-btn-text">{{ i.compat_btn_delete }}</span>
-                </button>
-              </form>
-            </div>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="card-body" style="padding:2rem 1.5rem;text-align:center;">
-    <div style="font-size:2rem;color:var(--pp-text-muted);margin-bottom:0.75rem;"><i class="ti ti-plug-x"></i></div>
-    <div style="font-weight:600;">{{ i.compat_empty_title }}</div>
-    <div style="margin-top:0.35rem;color:var(--pp-text-secondary);">{{ i.compat_empty_subtitle }}</div>
-  </div>
-  {% endif %}
+<div id="compat-mappings-panel">
+  {% include "compat/_mappings.html" %}
 </div>

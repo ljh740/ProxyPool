@@ -533,6 +533,74 @@ class TestE2EBrowser(unittest.TestCase):
         # Now body should be visible
         self.assertTrue(advanced_body.is_visible())
 
+    def test_config_form_submit_uses_ajax_without_reload(self):
+        self._login()
+        self._reset_storage()
+        self.page.goto(f"{self.base_url}/dashboard/config")
+        marker = self.page.evaluate(
+            "() => {"
+            " window.__configAjaxMarker = Math.random().toString(36).slice(2);"
+            " return window.__configAjaxMarker;"
+            " }"
+        )
+        self.page.fill("#AUTH_PASSWORD", "ajax-config-secret")
+        self.page.click('#config-form button[type="submit"]')
+        self.page.wait_for_selector(".pp-toast", timeout=5000)
+        self.assertEqual(
+            self.page.evaluate("() => window.__configAjaxMarker"),
+            marker,
+        )
+        self.assertEqual(
+            persistence.load_config(self._storage)["AUTH_PASSWORD"],
+            "ajax-config-secret",
+        )
+
+    def test_compat_save_edit_delete_use_ajax_without_reload(self):
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("compat_browser", "compat-browser.example.com", 10001)
+        persistence.save_proxy_list(self._storage, [entry])
+        self.page.goto(f"{self.base_url}/dashboard/compat")
+        marker = self.page.evaluate(
+            "() => {"
+            " window.__compatAjaxMarker = Math.random().toString(36).slice(2);"
+            " return window.__compatAjaxMarker;"
+            " }"
+        )
+
+        self.page.select_option("#target_type", "entry_key")
+        self.page.fill("#target_value", "compat_browser")
+        self.page.fill("#note", "ajax compat")
+        self.page.click('#compat-form button[type="submit"]')
+        self.page.wait_for_selector(".pp-toast", timeout=5000)
+        self.assertEqual(
+            self.page.evaluate("() => window.__compatAjaxMarker"),
+            marker,
+        )
+        self.assertTrue(self.page.locator("text=compat_browser").count() > 0)
+
+        self.page.click(".pp-compat-edit-btn")
+        self.assertEqual(self.page.input_value("#compat-original-listen-port"), "33100")
+        self.assertEqual(self.page.input_value("#target_value"), "compat_browser")
+        self.assertEqual(
+            self.page.evaluate("() => window.__compatAjaxMarker"),
+            marker,
+        )
+
+        self.page.on("dialog", lambda dialog: dialog.accept())
+        self.page.click('form[action="/dashboard/compat/33100/delete"] button[type="submit"]')
+        self.page.wait_for_function(
+            "() => document.querySelector('form[action=\"/dashboard/compat/33100/delete\"]') === null"
+        )
+        self.assertEqual(
+            self.page.evaluate("() => window.__compatAjaxMarker"),
+            marker,
+        )
+        self.assertEqual(
+            persistence.load_compat_port_mappings(self._storage),
+            [],
+        )
+
     # ====================================================================
     # Tier 5: Proxy CRUD via Browser
     # ====================================================================

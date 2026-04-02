@@ -234,7 +234,7 @@ class TestE2E(unittest.TestCase):
             )
         return resp
 
-    def _post_with_csrf(self, submit_path, *, data=None, form_path=None, allow_redirects=False):
+    def _post_with_csrf(self, submit_path, *, data=None, form_path=None, allow_redirects=False, headers=None):
         """Fetch a CSRF token from the form page, then submit the POST request."""
         resolved_form_path = form_path or self._resolve_form_path(submit_path)
         csrf_token = self._csrf_token_for(resolved_form_path)
@@ -243,6 +243,7 @@ class TestE2E(unittest.TestCase):
         return self.session.post(
             self.base_url + submit_path,
             data=payload,
+            headers=headers,
             allow_redirects=allow_redirects,
         )
 
@@ -512,6 +513,40 @@ class TestE2E(unittest.TestCase):
         self.assertIn("1 到 65535", query["msg"][0])
         self.assertNotIn("Listen Port", query["msg"][0])
 
+    def test_config_save_ajax_returns_json_without_redirect(self):
+        self._login()
+        self._reset_storage()
+        form = {f.env_key: f.default for f in config_center.CONFIG_PAGE_FIELDS}
+        form["AUTH_PASSWORD"] = "ajax-secret"
+
+        resp = self._post_with_csrf(
+            "/dashboard/config/save",
+            data=form,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertIn("saved", payload["message"].lower())
+        self.assertEqual(persistence.load_config(self._storage)["AUTH_PASSWORD"], "ajax-secret")
+
+    def test_config_save_ajax_invalid_returns_json_error(self):
+        self._login()
+        form = {f.env_key: f.default for f in config_center.CONFIG_PAGE_FIELDS}
+        form["PROXY_PORT"] = "99999"
+
+        resp = self._post_with_csrf(
+            "/dashboard/config/save",
+            data=form,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        payload = resp.json()
+        self.assertFalse(payload["ok"])
+        self.assertIn("port", payload["error"].lower())
+
     # ====================================================================
     # Tier 3.5: Compatibility Ports
     # ====================================================================
@@ -642,6 +677,61 @@ class TestE2E(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/dashboard/compat", resp.headers["Location"])
+        self.assertEqual(persistence.load_compat_port_mappings(self._storage), [])
+
+    def test_compat_save_ajax_returns_html_partials(self):
+        self._login()
+        self._reset_storage()
+        entry = _make_entry("compat_entry", "compat.example.com", 10001)
+        persistence.save_proxy_list(self._storage, [entry])
+
+        resp = self._post_with_csrf(
+            "/dashboard/compat/save",
+            data={
+                "listen_port": "33100",
+                "target_type": "entry_key",
+                "target_value": "compat_entry",
+                "enabled": "1",
+                "note": "ajax bridge",
+            },
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertIn("form_html", payload)
+        self.assertIn("mappings_html", payload)
+        self.assertIn("compat_entry", payload["mappings_html"])
+        self.assertEqual(persistence.load_compat_port_mappings(self._storage)[0].target_value, "compat_entry")
+
+    def test_compat_delete_ajax_returns_html_partials(self):
+        self._login()
+        self._reset_storage()
+        persistence.save_compat_port_mappings(
+            self._storage,
+            [
+                {
+                    "listen_port": 33100,
+                    "target_type": "session_name",
+                    "target_value": "browser-a",
+                    "enabled": True,
+                    "note": "",
+                }
+            ],
+        )
+
+        resp = self._post_with_csrf(
+            "/dashboard/compat/33100/delete",
+            form_path="/dashboard/compat",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertIn("form_html", payload)
+        self.assertIn("mappings_html", payload)
         self.assertEqual(persistence.load_compat_port_mappings(self._storage), [])
 
     # ====================================================================
