@@ -749,6 +749,10 @@ class TestPublicApiRoutes(unittest.TestCase):
         self.assertTrue(
             any(param["name"] == "tag_country" for param in entries_endpoint["query_params"])
         )
+        allocate_endpoint = next(
+            item for item in json_payload["endpoints"] if item["path"] == "/api/v1/compat/allocate"
+        )
+        self.assertIn("tag_country", allocate_endpoint["json_body"]["properties"])
 
         openapi_payload = self._payload(openapi_response)
         self.assertEqual(openapi_response.status_code, 200)
@@ -758,6 +762,12 @@ class TestPublicApiRoutes(unittest.TestCase):
                 param["name"] == "tag_country"
                 for param in openapi_payload["paths"]["/api/v1/entries"]["get"]["parameters"]
             )
+        )
+        self.assertEqual(
+            openapi_payload["paths"]["/api/v1/compat/allocate"]["post"]["requestBody"]["content"][
+                "application/json"
+            ]["example"]["tag_country"],
+            "US",
         )
 
     def test_resolve_username_is_public(self):
@@ -975,19 +985,32 @@ class TestPublicApiRoutes(unittest.TestCase):
         self.assertEqual(payload["data"]["filters"]["tags"], {"country": ["de"]})
 
     def test_allocate_and_unbind_cycle(self):
-        first = self.client.post(
-            "/api/v1/compat/allocate",
-        )
-        second = self.client.post(
-            "/api/v1/compat/allocate",
-        )
+        def pick_last(entries):
+            return entries[-1]
+
+        with patch("admin_web.routes.api.random.choice", side_effect=pick_last) as mock_choice:
+            first = self.client.post(
+                "/api/v1/compat/allocate",
+            )
+            second = self.client.post(
+                "/api/v1/compat/allocate",
+            )
 
         first_payload = self._payload(first)
         second_payload = self._payload(second)
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 201)
-        self.assertEqual(first_payload["data"]["resolved_entry"]["entry_key"], "e1")
-        self.assertEqual(second_payload["data"]["resolved_entry"]["entry_key"], "e2")
+        self.assertEqual(first_payload["data"]["resolved_entry"]["entry_key"], "e2")
+        self.assertEqual(second_payload["data"]["resolved_entry"]["entry_key"], "e1")
+        self.assertEqual(mock_choice.call_count, 2)
+        self.assertEqual(
+            [entry.key for entry in mock_choice.call_args_list[0].args[0]],
+            ["e1", "e2"],
+        )
+        self.assertEqual(
+            [entry.key for entry in mock_choice.call_args_list[1].args[0]],
+            ["e1"],
+        )
         self.assertEqual(
             first_payload["data"]["mapping"]["listen_port"],
             compat_ports.COMPAT_PORT_MIN,
@@ -1007,7 +1030,7 @@ class TestPublicApiRoutes(unittest.TestCase):
         )
         resolve_payload = self._payload(resolve)
         self.assertEqual(resolve.status_code, 200)
-        self.assertEqual(resolve_payload["data"]["resolved_entry"]["entry_key"], "e1")
+        self.assertEqual(resolve_payload["data"]["resolved_entry"]["entry_key"], "e2")
 
         unbind = self.client.post(
             "/api/v1/compat/unbind",
@@ -1025,6 +1048,53 @@ class TestPublicApiRoutes(unittest.TestCase):
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0].listen_port, compat_ports.COMPAT_PORT_MIN + 1)
         self.assertEqual(len(self.reload_calls), 3)
+
+    def test_allocate_filters_by_country_tag(self):
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry("e1", "host1.example.com", 10001, tags={"country": "US"}),
+                _make_entry("e2", "host2.example.com", 10002, tags={"country": "DE"}),
+            ],
+        )
+
+        with patch("admin_web.routes.api.random.choice", side_effect=lambda entries: entries[0]) as mock_choice:
+            response = self.client.post(
+                "/api/v1/compat/allocate",
+                json={"tag_country": "de"},
+            )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(payload["data"]["resolved_entry"]["entry_key"], "e2")
+        self.assertEqual(
+            [entry.key for entry in mock_choice.call_args.args[0]],
+            ["e2"],
+        )
+        mappings = load_compat_port_mappings(self.storage)
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0].target_value, "e2")
+
+    def test_allocate_returns_conflict_when_tag_filter_has_no_match(self):
+        save_proxy_list(
+            self.storage,
+            [
+                _make_entry("e1", "host1.example.com", 10001, tags={"country": "US"}),
+                _make_entry("e2", "host2.example.com", 10002, tags={"country": "DE"}),
+            ],
+        )
+
+        response = self.client.post(
+            "/api/v1/compat/allocate",
+            json={"tag_country": "jp"},
+        )
+
+        payload = self._payload(response)
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "entry_pool_exhausted")
+        self.assertIn("tag filters", payload["error"]["message"])
+        self.assertEqual(load_compat_port_mappings(self.storage), [])
 
 
 class TestConfigSaveReloadRoundtrip(unittest.TestCase):

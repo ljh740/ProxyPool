@@ -1,6 +1,7 @@
 """Public API routes for automation clients and AI-agent generated scripts."""
 
 import json
+import random
 from urllib.parse import quote as _url_quote
 
 from compat_ports import (
@@ -215,11 +216,19 @@ def _resolve_mapping_entry(router, mapping):
     return router.route_entry(mapping.target_value)
 
 
-def _pick_unbound_entry(entries, mappings):
+def _pick_unbound_entry(entries, mappings, *, tag_filters=None):
     bound_entry_keys = {
         mapping.target_value for mapping in mappings if mapping.enabled and mapping.target_type == TARGET_TYPE_ENTRY_KEY
     }
-    return next((entry for entry in entries if entry.key not in bound_entry_keys), None)
+    available_entries = [
+        entry
+        for entry in entries
+        if entry.key not in bound_entry_keys
+        and (not tag_filters or _entry_matches_tag_filters(entry, tag_filters))
+    ]
+    if not available_entries:
+        return None
+    return random.choice(available_entries)
 
 
 def _build_resolve_response(app_config, query_type, query_value, resolved_entry, mapping=None):
@@ -303,6 +312,17 @@ def _example_entry():
     )
 
 
+def _filter_values(args, key):
+    if hasattr(args, "getlist"):
+        return args.getlist(key)
+    raw_value = args.get(key)
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, (list, tuple, set)):
+        return list(raw_value)
+    return [raw_value]
+
+
 def _parse_tag_filters(args):
     tag_filters = {}
     for query_key in sorted(args.keys()):
@@ -312,7 +332,7 @@ def _parse_tag_filters(args):
         if not tag_key:
             continue
         values = []
-        for raw_value in args.getlist(query_key):
+        for raw_value in _filter_values(args, query_key):
             for value in str(raw_value).split(","):
                 normalized_value = value.strip()
                 if normalized_value:
@@ -645,8 +665,9 @@ def _api_spec(runtime):
             "path": "/api/v1/compat/allocate",
             "summary": "Allocate one compatibility port from the proxy pool.",
             "description": (
-                "The server picks the first upstream entry that is not already bound "
-                "to an exact compatibility port mapping."
+                "The server randomly picks one upstream entry that is not already bound "
+                "to an exact compatibility port mapping. Optional tag_* filters such as "
+                "tag_country restrict the candidate pool before selection."
             ),
             "query_params": [],
             "json_body": {
@@ -656,12 +677,25 @@ def _api_spec(runtime):
                     "replace": "boolean, optional",
                     "enabled": "boolean, optional, default true",
                     "note": "string, optional",
+                    "tag_country": "string, optional; only allocate from entries matching this country tag",
+                    "tag_<name>": "string, optional; generic tag filter, comma-separated values supported",
                 },
                 "required_rule": "No required fields.",
             },
-            "curl_example": "curl -X POST '%s/api/v1/compat/allocate'" % base_url,
+            "curl_example": (
+                "curl -X POST '%s/api/v1/compat/allocate' "
+                "-H 'Content-Type: application/json' "
+                "-d '{\"tag_country\":\"US\",\"note\":\"allocated by script\"}'"
+            )
+            % base_url,
             "python_example": (
-                "import requests\nresp = requests.post('%s/api/v1/compat/allocate', timeout=10)\nprint(resp.json())"
+                "import requests\n"
+                "resp = requests.post(\n"
+                "    '%s/api/v1/compat/allocate',\n"
+                "    json={'tag_country': 'US', 'note': 'allocated by script'},\n"
+                "    timeout=10,\n"
+                ")\n"
+                "print(resp.json())"
             )
             % base_url,
             "response_example": _example_allocate_response(app_config),
@@ -672,7 +706,7 @@ def _api_spec(runtime):
                 },
                 {
                     "code": "entry_pool_exhausted",
-                    "message": "No unbound upstream entries are available.",
+                    "message": "No unbound upstream entries are available for the requested filters.",
                 },
             ],
         },
@@ -937,6 +971,7 @@ def _openapi_spec(runtime):
                         "content": {
                             "application/json": {
                                 "example": {
+                                    "tag_country": "US",
                                     "note": "allocated by script",
                                 }
                             }
@@ -1336,6 +1371,7 @@ def register_public_api_routes(blueprint, runtime, *, csrf=None):
     @_csrf_exempt_post("/api/v1/compat/allocate")
     def api_compat_allocate():
         payload = _request_payload()
+        tag_filters = _parse_tag_filters(payload)
         enabled = _coerce_bool(payload.get("enabled"), True)
         note = str(payload.get("note", "")).strip()
         replace = _coerce_bool(payload.get("replace"), False)
@@ -1358,11 +1394,15 @@ def register_public_api_routes(blueprint, runtime, *, csrf=None):
                 status=503,
             )
 
-        entry = _pick_unbound_entry(entries, mappings)
+        entry = _pick_unbound_entry(entries, mappings, tag_filters=tag_filters)
         if entry is None:
             return _api_error(
                 "entry_pool_exhausted",
-                "No unbound upstream entries are available for compatibility ports.",
+                (
+                    "No unbound upstream entries match the requested tag filters."
+                    if tag_filters
+                    else "No unbound upstream entries are available for compatibility ports."
+                ),
                 status=409,
             )
 
