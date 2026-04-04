@@ -44,7 +44,6 @@ function setLoading(btn){
   btn.dataset.prevDisabled=btn.disabled?"1":"0";
   btn.classList.add("pp-loading");
   btn.disabled=true;
-  var spans=btn.querySelectorAll(":not(.pp-btn-text)");
   var textNode=btn.querySelector(".pp-btn-text");
   if(!textNode){
     var s=document.createElement("span");

@@ -91,14 +91,7 @@
     updateHint();
   }
 
-  async function submitCompatForm(form, submitButton) {
-    const payload = await adminPostForm(form, fallbackMessage());
-    replaceCompatPanels(payload);
-    resetFormToDefault();
-    if (payload.message) showToast(payload.message, 'success');
-  }
-
-  async function submitCompatDelete(form, submitButton) {
+  async function submitCompatAction(form) {
     const payload = await adminPostForm(form, fallbackMessage());
     replaceCompatPanels(payload);
     resetFormToDefault();
@@ -136,11 +129,7 @@
 
     setLoading(submitButton);
     try {
-      if (form.id === 'compat-form') {
-        await submitCompatForm(form, submitButton);
-      } else {
-        await submitCompatDelete(form, submitButton);
-      }
+      await submitCompatAction(form);
     } catch (error) {
       if (error && error.payload) {
         replaceCompatPanels(error.payload);

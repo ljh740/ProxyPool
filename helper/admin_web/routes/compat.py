@@ -130,6 +130,43 @@ def _compat_ajax_payload(locale, entries, mappings, *, form_state=None, error=""
     return payload
 
 
+def _compat_ajax_response(locale, entries, mappings, *, form_state=None, error="", message=None, status=200):
+    return _json_response(
+        {
+            "ok": not bool(error),
+            **_compat_ajax_payload(
+                locale,
+                entries,
+                mappings,
+                form_state=form_state,
+                error=error,
+                message=message,
+            ),
+        },
+        status=status,
+    )
+
+
+def _compat_form_error_response(runtime, ui, *, entries, mappings, form_state, error_message, status=400):
+    if _is_ajax_request():
+        return _compat_ajax_response(
+            ui.locale,
+            entries,
+            mappings,
+            form_state=form_state,
+            error=error_message,
+            status=status,
+        )
+    return _render_compat_page(
+        runtime,
+        ui,
+        mappings=mappings,
+        entries=entries,
+        form_state=form_state,
+        error=error_message,
+    )
+
+
 def _render_compat_page(runtime, ui, *, mappings, entries, form_state=None, error=""):
     content = render_template(
         "compat/page.html",
@@ -210,45 +247,51 @@ def register_compat_routes(blueprint, runtime):
             "edit_mode": bool(original_listen_port),
         }
 
-        def _render_error_response(error_message, *, status=400):
-            if _is_ajax_request():
-                return _json_response(
-                    {
-                        "ok": False,
-                        **_compat_ajax_payload(
-                            ui.locale,
-                            entries,
-                            mappings,
-                            form_state=form_state,
-                            error=error_message,
-                        ),
-                    },
-                    status=status,
-                )
-            return _render_compat_page(
-                runtime,
-                ui,
-                mappings=mappings,
-                entries=entries,
-                form_state=form_state,
-                error=error_message,
-            )
-
         original_port = None
         if original_listen_port:
             try:
                 original_port = int(original_listen_port)
             except ValueError:
-                return _render_error_response(t("compat_not_found", ui.locale), status=404)
+                return _compat_form_error_response(
+                    runtime,
+                    ui,
+                    entries=entries,
+                    mappings=mappings,
+                    form_state=form_state,
+                    error_message=t("compat_not_found", ui.locale),
+                    status=404,
+                )
 
             if not any(mapping.listen_port == original_port for mapping in mappings):
-                return _render_error_response(t("compat_not_found", ui.locale), status=404)
+                return _compat_form_error_response(
+                    runtime,
+                    ui,
+                    entries=entries,
+                    mappings=mappings,
+                    form_state=form_state,
+                    error_message=t("compat_not_found", ui.locale),
+                    status=404,
+                )
 
         if target_type not in TARGET_TYPES:
-            return _render_error_response(t("compat_invalid_target_type", ui.locale))
+            return _compat_form_error_response(
+                runtime,
+                ui,
+                entries=entries,
+                mappings=mappings,
+                form_state=form_state,
+                error_message=t("compat_invalid_target_type", ui.locale),
+            )
 
         if target_type == TARGET_TYPE_ENTRY_KEY and not any(entry.key == target_value for entry in entries):
-            return _render_error_response(t("compat_entry_missing", ui.locale))
+            return _compat_form_error_response(
+                runtime,
+                ui,
+                entries=entries,
+                mappings=mappings,
+                form_state=form_state,
+                error_message=t("compat_entry_missing", ui.locale),
+            )
 
         if (
             original_port is not None
@@ -256,7 +299,15 @@ def register_compat_routes(blueprint, runtime):
             and int(listen_port) != original_port
             and any(mapping.listen_port == int(listen_port) for mapping in mappings)
         ):
-            return _render_error_response(t("compat_port_conflict", ui.locale), status=409)
+            return _compat_form_error_response(
+                runtime,
+                ui,
+                entries=entries,
+                mappings=mappings,
+                form_state=form_state,
+                error_message=t("compat_port_conflict", ui.locale),
+                status=409,
+            )
 
         try:
             mapping = CompatPortMapping(
@@ -267,13 +318,18 @@ def register_compat_routes(blueprint, runtime):
                 note=note,
             )
         except (TypeError, ValueError):
-            return _render_error_response(
-                t(
+            return _compat_form_error_response(
+                runtime,
+                ui,
+                entries=entries,
+                mappings=mappings,
+                form_state=form_state,
+                error_message=t(
                     "compat_invalid_mapping",
                     ui.locale,
                     min=COMPAT_PORT_MIN,
                     max=COMPAT_PORT_MAX,
-                )
+                ),
             )
 
         updated = [
@@ -285,11 +341,11 @@ def register_compat_routes(blueprint, runtime):
         runtime.trigger_reload()
         success_message = t("compat_saved", ui.locale)
         if _is_ajax_request():
-            return _json_response(
-                {
-                    "ok": True,
-                    **_compat_ajax_payload(ui.locale, entries, updated, message=success_message),
-                }
+            return _compat_ajax_response(
+                ui.locale,
+                entries,
+                updated,
+                message=success_message,
             )
         return runtime.redirect(
             build_redirect_location(
@@ -316,8 +372,11 @@ def register_compat_routes(blueprint, runtime):
             port = int(listen_port)
         except ValueError:
             if _is_ajax_request():
-                return _json_response(
-                    {"ok": False, "error": t("compat_not_found", ui.locale)},
+                return _compat_ajax_response(
+                    ui.locale,
+                    entries,
+                    mappings,
+                    error=t("compat_not_found", ui.locale),
                     status=404,
                 )
             return runtime.redirect(
@@ -332,8 +391,11 @@ def register_compat_routes(blueprint, runtime):
         updated = [mapping for mapping in mappings if mapping.listen_port != port]
         if len(updated) == len(mappings):
             if _is_ajax_request():
-                return _json_response(
-                    {"ok": False, "error": t("compat_not_found", ui.locale)},
+                return _compat_ajax_response(
+                    ui.locale,
+                    entries,
+                    mappings,
+                    error=t("compat_not_found", ui.locale),
                     status=404,
                 )
             return runtime.redirect(
@@ -349,11 +411,11 @@ def register_compat_routes(blueprint, runtime):
         runtime.trigger_reload()
         success_message = t("compat_deleted", ui.locale)
         if _is_ajax_request():
-            return _json_response(
-                {
-                    "ok": True,
-                    **_compat_ajax_payload(ui.locale, entries, updated, message=success_message),
-                }
+            return _compat_ajax_response(
+                ui.locale,
+                entries,
+                updated,
+                message=success_message,
             )
         return runtime.redirect(
             build_redirect_location(
