@@ -8,6 +8,12 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import quote as _url_quote
 
+from compat_ports import (
+    COMPAT_PORT_MAX,
+    COMPAT_PORT_MIN,
+    TARGET_TYPE_ENTRY_KEY,
+    CompatPortMapping,
+)
 from flask import render_template, request
 
 from i18n import get_translations, t
@@ -162,7 +168,108 @@ def _build_proxy_summary(entry):
         "hop_count": len(entry.hops),
     }
 
-def _build_proxy_list_state(locale, entries, source_filter, country_filter, page_value, proxies_per_page):
+
+class _CompatBatchGenerationError(ValueError):
+    def __init__(self, code, **context):
+        self.code = code
+        self.context = context
+        super().__init__(code)
+
+
+def _next_free_compat_port(mappings, start_port=COMPAT_PORT_MIN):
+    used_ports = {mapping.listen_port for mapping in mappings}
+    for port in range(max(start_port, COMPAT_PORT_MIN), COMPAT_PORT_MAX + 1):
+        if port not in used_ports:
+            return port
+    return None
+
+
+def _ordered_selected_entries(entries, keys):
+    entries_by_key = {entry.key: entry for entry in entries}
+    ordered = []
+    seen = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        entry = entries_by_key.get(key)
+        if entry is not None:
+            ordered.append(entry)
+    return ordered
+
+
+def _batch_compat_note(entry, existing_notes=None):
+    if existing_notes and existing_notes.get(entry.key):
+        return existing_notes[entry.key]
+    return entry.label
+
+
+def _build_batch_compat_mappings(mappings, selected_entries, start_port):
+    try:
+        port = int(start_port)
+    except (TypeError, ValueError) as exc:
+        raise _CompatBatchGenerationError("invalid_start_port") from exc
+
+    if port < COMPAT_PORT_MIN or port > COMPAT_PORT_MAX:
+        raise _CompatBatchGenerationError("invalid_start_port")
+
+    selected_keys = {entry.key for entry in selected_entries}
+    existing_notes = {
+        mapping.target_value: mapping.note
+        for mapping in mappings
+        if (
+            mapping.target_type == TARGET_TYPE_ENTRY_KEY
+            and mapping.target_value in selected_keys
+            and mapping.note
+        )
+    }
+    retained = []
+    reserved_ports = set()
+    for mapping in mappings:
+        if mapping.target_type == TARGET_TYPE_ENTRY_KEY and mapping.target_value in selected_keys:
+            continue
+        retained.append(mapping)
+        reserved_ports.add(mapping.listen_port)
+
+    if port + len(selected_entries) - 1 > COMPAT_PORT_MAX:
+        raise _CompatBatchGenerationError(
+            "port_range_exhausted",
+            start=port,
+            max=COMPAT_PORT_MAX,
+        )
+
+    generated = []
+    for entry in selected_entries:
+        if port in reserved_ports:
+            raise _CompatBatchGenerationError("port_conflict", port=port)
+        generated.append(
+            CompatPortMapping(
+                listen_port=port,
+                target_type=TARGET_TYPE_ENTRY_KEY,
+                target_value=entry.key,
+                note=_batch_compat_note(entry, existing_notes),
+            )
+        )
+        reserved_ports.add(port)
+        port += 1
+
+    updated = sorted(retained + generated, key=lambda item: item.listen_port)
+    return updated, generated
+
+
+def _build_proxy_list_state(
+    locale,
+    entries,
+    source_filter,
+    country_filter,
+    page_value,
+    proxies_per_page,
+    compat_mappings=None,
+):
+    compat_mappings = list(compat_mappings or [])
+    compat_default_start_port = _next_free_compat_port(compat_mappings)
+    if compat_default_start_port is None:
+        compat_default_start_port = COMPAT_PORT_MIN
     manual_count = sum(1 for entry in entries if entry.source_tag == "manual")
     auto_count = len(entries) - manual_count
     available_countries = sorted(
@@ -244,6 +351,9 @@ def _build_proxy_list_state(locale, entries, source_filter, country_filter, page
         "page_urls": {page_number: _page_url(page_number) for page_number in page_range},
         "prev_page_url": _page_url(page - 1),
         "next_page_url": _page_url(page + 1),
+        "compat_port_min": COMPAT_PORT_MIN,
+        "compat_port_max": COMPAT_PORT_MAX,
+        "compat_default_start_port": compat_default_start_port,
         "i": translations,
     }
 
@@ -673,13 +783,16 @@ def register_proxy_routes(blueprint, runtime):
             return guard
 
         ui = runtime.resolve_ui_state()
+        storage = runtime.get_storage()
+        entries = list(runtime.load_entries(storage))
         state = _build_proxy_list_state(
             ui.locale,
-            runtime.load_entries(runtime.get_storage()),
+            entries,
             request.args.get("source", "all"),
             request.args.get("country", ""),
             request.args.get("page", "1"),
             runtime.proxies_per_page,
+            compat_mappings=runtime.load_compat_mappings(storage),
         )
         content = render_template("proxies/list.html", **state)
         return runtime.build_page_response(
@@ -1310,6 +1423,87 @@ def register_proxy_routes(blueprint, runtime):
             build_redirect_location(
                 "/dashboard/proxies",
                 msg=t("proxies_pool_state", ui.locale, state=pool_state.upper(), count=changed),
+            ),
+            ui=ui,
+        )
+
+    @blueprint.post("/dashboard/proxies/batch/compat")
+    def batch_generate_compat():
+        guard = runtime.require_admin()
+        if guard is not None:
+            return guard
+
+        ui = runtime.resolve_ui_state()
+        keys = request.form.getlist("keys")
+        if not keys:
+            return runtime.redirect(
+                build_redirect_location(
+                    "/dashboard/proxies",
+                    error=t("proxies_no_selection", ui.locale),
+                ),
+                ui=ui,
+            )
+
+        storage = runtime.get_storage()
+        entries = list(runtime.load_entries(storage))
+        selected_entries = _ordered_selected_entries(entries, keys)
+        if not selected_entries:
+            return runtime.redirect(
+                build_redirect_location(
+                    "/dashboard/proxies",
+                    error=t("proxies_not_found", ui.locale),
+                ),
+                ui=ui,
+            )
+
+        start_port = request.form.get("start_port", str(COMPAT_PORT_MIN)).strip()
+        if not start_port:
+            start_port = str(COMPAT_PORT_MIN)
+
+        try:
+            updated, generated = _build_batch_compat_mappings(
+                runtime.load_compat_mappings(storage),
+                selected_entries,
+                start_port,
+            )
+        except _CompatBatchGenerationError as exc:
+            if exc.code == "invalid_start_port":
+                error_message = t(
+                    "proxies_compat_invalid_start_port",
+                    ui.locale,
+                    min=COMPAT_PORT_MIN,
+                    max=COMPAT_PORT_MAX,
+                )
+            elif exc.code == "port_range_exhausted":
+                error_message = t(
+                    "proxies_compat_port_range_exhausted",
+                    ui.locale,
+                    start=exc.context["start"],
+                    max=exc.context["max"],
+                )
+            else:
+                error_message = t(
+                    "proxies_compat_port_conflict",
+                    ui.locale,
+                    port=exc.context["port"],
+                )
+            return runtime.redirect(
+                build_redirect_location("/dashboard/proxies", error=error_message),
+                ui=ui,
+            )
+
+        runtime.save_compat_mappings(updated, storage)
+        runtime.trigger_reload()
+        return runtime.redirect(
+            build_redirect_location(
+                "/dashboard/proxies",
+                msg=t(
+                    "proxies_compat_generated",
+                    ui.locale,
+                    count=len(generated),
+                    first=generated[0].listen_port,
+                    last=generated[-1].listen_port,
+                ),
             ),
             ui=ui,
         )

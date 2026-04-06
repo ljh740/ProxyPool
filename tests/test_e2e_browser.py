@@ -30,6 +30,7 @@ config_center = importlib.import_module("config_center")
 upstream_pool = importlib.import_module("upstream_pool")
 proxy_server = importlib.import_module("proxy_server")
 persistence = importlib.import_module("persistence")
+compat_ports = importlib.import_module("compat_ports")
 web_admin = importlib.import_module("web_admin")
 proxy_routes = importlib.import_module("admin_web.routes.proxies")
 
@@ -37,6 +38,7 @@ UpstreamEntry = upstream_pool.UpstreamEntry
 UpstreamHop = upstream_pool.UpstreamHop
 compute_entry_key = upstream_pool.compute_entry_key
 ProxyConfig = proxy_server.ProxyConfig
+CompatPortMapping = compat_ports.CompatPortMapping
 RingBufferHandler = web_admin.RingBufferHandler
 
 TEST_PASSWORD = "test-admin-pw"
@@ -601,6 +603,49 @@ class TestE2EBrowser(unittest.TestCase):
             [],
         )
 
+    def test_compat_batch_delete_uses_ajax_without_reload(self):
+        self._login()
+        self._reset_storage()
+        persistence.save_compat_port_mappings(
+            self._storage,
+            [
+                CompatPortMapping(
+                    listen_port=33100,
+                    target_type="session_name",
+                    target_value="batch-a",
+                ),
+                CompatPortMapping(
+                    listen_port=33101,
+                    target_type="session_name",
+                    target_value="batch-b",
+                ),
+            ],
+        )
+        self.page.goto(f"{self.base_url}/dashboard/compat")
+        marker = self.page.evaluate(
+            "() => {"
+            " window.__compatBatchAjaxMarker = Math.random().toString(36).slice(2);"
+            " return window.__compatBatchAjaxMarker;"
+            " }"
+        )
+
+        self.page.locator(".pp-compat-row-check").nth(0).check()
+        self.page.locator(".pp-compat-row-check").nth(1).check()
+        self.page.on("dialog", lambda dialog: dialog.accept())
+        self.page.click('#compat-batch-delete-form button[type="submit"]')
+        self.page.wait_for_function(
+            "() => document.querySelectorAll('.pp-compat-row-check').length === 0"
+        )
+
+        self.assertEqual(
+            self.page.evaluate("() => window.__compatBatchAjaxMarker"),
+            marker,
+        )
+        self.assertEqual(
+            persistence.load_compat_port_mappings(self._storage),
+            [],
+        )
+
     # ====================================================================
     # Tier 5: Proxy CRUD via Browser
     # ====================================================================
@@ -961,6 +1006,35 @@ class TestE2EBrowser(unittest.TestCase):
         saved_entries = {entry.key: entry for entry in persistence.load_proxy_list(self._storage)}
         self.assertFalse(saved_entries["bt1"].in_random_pool)
         self.assertTrue(saved_entries["bt2"].in_random_pool)
+
+    def test_batch_generate_compat_flow(self):
+        """Selecting rows and generating compat ports creates entry-key mappings in order."""
+        self._login()
+        self._reset_storage()
+        entries = [
+            _make_entry("bc1", "compat-a.example.com", 12001),
+            _make_entry("bc2", "compat-b.example.com", 12002),
+        ]
+        persistence.save_proxy_list(self._storage, entries)
+        self.page.goto(f"{self.base_url}/dashboard/proxies")
+
+        self.page.locator(".row-check").nth(0).check()
+        self.page.locator(".row-check").nth(1).check()
+        self.page.fill("#compat-start-port", "33105")
+        self.page.click('button[data-batch-action="generate-compat"]')
+        self.page.wait_for_url("**/dashboard/proxies**")
+
+        mappings = persistence.load_compat_port_mappings(self._storage)
+        self.assertEqual(
+            [
+                (mapping.listen_port, mapping.target_type, mapping.target_value, mapping.note)
+                for mapping in mappings
+            ],
+            [
+                (33105, "entry_key", "bc1", "compat-a.example.com:12001"),
+                (33106, "entry_key", "bc2", "compat-b.example.com:12002"),
+            ],
+        )
 
     def test_batch_delete_flow(self):
         """Selecting rows and clicking batch delete removes the chosen proxies."""

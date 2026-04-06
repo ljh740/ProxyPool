@@ -63,6 +63,18 @@
   {% if entries %}
   <div id="batch-toolbar" style="display:none" class="pp-proxy-batch-toolbar">
     <span style="color:var(--pp-text-secondary);font-size:0.85rem"><span id="selected-count">0</span> {{ i.proxies_selected }}</span>
+    <label for="compat-start-port" style="color:var(--pp-text-secondary);font-size:0.85rem">{{ i.proxies_compat_start_port }}</label>
+    <input type="number"
+           id="compat-start-port"
+           class="form-control form-control-sm"
+           min="{{ compat_port_min|default(33100) }}"
+           max="{{ compat_port_max|default(33199) }}"
+           value="{{ compat_default_start_port|default(compat_port_min|default(33100)) }}"
+           style="width:110px">
+    <button type="button"
+            class="btn btn-sm"
+            style="border:1px solid var(--pp-border);color:var(--pp-text)"
+            data-batch-action="generate-compat">{{ i.proxies_generate_compat }}</button>
     <button type="button" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" data-batch-action="invert">{{ i.proxies_invert }}</button>
     <button type="button" id="batch-detect-country-btn" class="btn btn-sm" style="border:1px solid var(--pp-border);color:var(--pp-text)" data-batch-action="detect-country">{{ i.proxies_country_detect_selected }}</button>
     <button type="button" class="btn btn-sm" style="background:var(--pp-success-subtle);color:var(--pp-success);border:none" data-batch-action="toggle-pool" data-pool-state="on">{{ i.proxies_pool_on }}</button>

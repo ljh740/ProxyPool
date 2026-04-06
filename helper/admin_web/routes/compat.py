@@ -167,6 +167,25 @@ def _compat_form_error_response(runtime, ui, *, entries, mappings, form_state, e
     )
 
 
+def _compat_action_error_response(runtime, ui, *, error_message, status=400):
+    if _is_ajax_request():
+        return _json_response(
+            {
+                "ok": False,
+                "error": error_message,
+            },
+            status=status,
+        )
+    return runtime.redirect(
+        build_redirect_location(
+            "/dashboard/compat",
+            msg=error_message,
+            type="error",
+        ),
+        ui=ui,
+    )
+
+
 def _render_compat_page(runtime, ui, *, mappings, entries, form_state=None, error=""):
     content = render_template(
         "compat/page.html",
@@ -410,6 +429,72 @@ def register_compat_routes(blueprint, runtime):
         runtime.save_compat_mappings(updated, storage)
         runtime.trigger_reload()
         success_message = t("compat_deleted", ui.locale)
+        if _is_ajax_request():
+            return _compat_ajax_response(
+                ui.locale,
+                entries,
+                updated,
+                message=success_message,
+            )
+        return runtime.redirect(
+            build_redirect_location(
+                "/dashboard/compat",
+                msg=success_message,
+                type="success",
+            ),
+            ui=ui,
+        )
+
+    @blueprint.post("/dashboard/compat/batch/delete")
+    def compat_batch_delete():
+        guard = runtime.require_admin()
+        if guard is not None:
+            if _is_ajax_request():
+                return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+            return guard
+
+        ui = runtime.resolve_ui_state()
+        storage = runtime.get_storage()
+        mappings = list(runtime.load_compat_mappings(storage))
+        entries = list(runtime.load_entries(storage))
+        raw_ports = [
+            value.strip() for value in request.form.getlist("listen_ports") if value.strip()
+        ]
+        if not raw_ports:
+            return _compat_action_error_response(
+                runtime,
+                ui,
+                error_message=t("compat_no_selection", ui.locale),
+            )
+
+        selected_ports = set()
+        for value in raw_ports:
+            try:
+                selected_ports.add(int(value))
+            except ValueError:
+                continue
+        if not selected_ports:
+            return _compat_action_error_response(
+                runtime,
+                ui,
+                error_message=t("compat_no_selection", ui.locale),
+            )
+
+        updated = [
+            mapping for mapping in mappings if mapping.listen_port not in selected_ports
+        ]
+        removed = len(mappings) - len(updated)
+        if removed == 0:
+            return _compat_action_error_response(
+                runtime,
+                ui,
+                error_message=t("compat_not_found", ui.locale),
+                status=404,
+            )
+
+        runtime.save_compat_mappings(updated, storage)
+        runtime.trigger_reload()
+        success_message = t("compat_deleted_count", ui.locale, count=removed)
         if _is_ajax_request():
             return _compat_ajax_response(
                 ui.locale,

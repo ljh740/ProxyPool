@@ -18,6 +18,7 @@ proxy_server = importlib.import_module("proxy_server")
 persistence = importlib.import_module("persistence")
 compat_ports = importlib.import_module("compat_ports")
 admin_auth = importlib.import_module("admin_web.auth")
+admin_resources = importlib.import_module("admin_web.resources")
 proxy_routes = importlib.import_module("admin_web.routes.proxies")
 
 # Import web_admin with os.environ patches so it does not fail on missing
@@ -458,8 +459,20 @@ class TestAdminThemeStyles(unittest.TestCase):
         self.assertIn("pp-selected-row", web_admin._PROXY_LIST_SCRIPTS)
         self.assertIn("pp-detect-country-btn", web_admin._PROXY_LIST_PAGE)
         self.assertIn("detect-missing-country-btn", web_admin._PROXY_LIST_PAGE)
+        self.assertIn('id="compat-start-port"', web_admin._PROXY_LIST_PAGE)
+        self.assertIn('data-batch-action="generate-compat"', web_admin._PROXY_LIST_PAGE)
         self.assertIn('data-batch-action="toggle-pool"', web_admin._PROXY_LIST_PAGE)
         self.assertIn('data-batch-action="delete"', web_admin._PROXY_LIST_PAGE)
+
+    def test_compat_template_supports_batch_delete(self):
+        compat_mappings_page = admin_resources.load_jinja_template_source("compat/_mappings.html")
+        compat_scripts = admin_resources.load_template_source("compat/scripts.js")
+
+        self.assertIn('id="compat-select-all"', compat_mappings_page)
+        self.assertIn('id="compat-batch-delete-form"', compat_mappings_page)
+        self.assertIn('data-compat-batch-action="invert"', compat_mappings_page)
+        self.assertIn("compat-batch-delete-form", compat_scripts)
+        self.assertIn("pp-compat-row-check", compat_scripts)
 
     def test_proxy_list_state_filters_by_country_and_preserves_urls(self):
         entries = [
@@ -484,6 +497,104 @@ class TestAdminThemeStyles(unittest.TestCase):
         self.assertEqual(state["filter_urls"]["all"], "/dashboard/proxies?country=DE")
         self.assertEqual(state["filter_urls"]["manual"], "/dashboard/proxies?source=manual&country=DE")
         self.assertEqual(state["page_urls"][1], "/dashboard/proxies?source=manual&country=DE")
+
+    def test_build_batch_compat_mappings_replaces_selected_entry_mappings(self):
+        selected_entries = [
+            UpstreamEntry(
+                key="e1",
+                label="first.example.com:10001",
+                hops=(UpstreamHop("socks5", "first.example.com", 10001, "user", "pass"),),
+            ),
+            UpstreamEntry(
+                key="e2",
+                label="second.example.com:10002",
+                hops=(UpstreamHop("socks5", "second.example.com", 10002, "user", "pass"),),
+            ),
+        ]
+        mappings = [
+            CompatPortMapping(
+                listen_port=33100,
+                target_type="entry_key",
+                target_value="e1",
+            ),
+            CompatPortMapping(
+                listen_port=33110,
+                target_type="entry_key",
+                target_value="other",
+            ),
+        ]
+
+        updated, generated = proxy_routes._build_batch_compat_mappings(
+            mappings,
+            selected_entries,
+            33105,
+        )
+
+        self.assertEqual(
+            [(mapping.listen_port, mapping.target_value, mapping.note) for mapping in generated],
+            [
+                (33105, "e1", "first.example.com:10001"),
+                (33106, "e2", "second.example.com:10002"),
+            ],
+        )
+        self.assertEqual(
+            [
+                (mapping.listen_port, mapping.target_type, mapping.target_value, mapping.note)
+                for mapping in updated
+            ],
+            [
+                (33105, "entry_key", "e1", "first.example.com:10001"),
+                (33106, "entry_key", "e2", "second.example.com:10002"),
+                (33110, "entry_key", "other", ""),
+            ],
+        )
+
+    def test_build_batch_compat_mappings_preserves_existing_note(self):
+        selected_entries = [
+            UpstreamEntry(
+                key="e1",
+                label="first.example.com:10001",
+                hops=(UpstreamHop("socks5", "first.example.com", 10001, "user", "pass"),),
+            )
+        ]
+        mappings = [
+            CompatPortMapping(
+                listen_port=33100,
+                target_type="entry_key",
+                target_value="e1",
+                note="keep me",
+            ),
+        ]
+
+        updated, generated = proxy_routes._build_batch_compat_mappings(
+            mappings,
+            selected_entries,
+            33105,
+        )
+
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(generated[0].note, "keep me")
+        self.assertEqual(updated[0].note, "keep me")
+
+    def test_build_batch_compat_mappings_reports_conflicting_port(self):
+        selected_entries = [_make_entry("e1", "first.example.com", 10001)]
+        mappings = [
+            CompatPortMapping(
+                listen_port=33105,
+                target_type="entry_key",
+                target_value="other",
+            )
+        ]
+
+        with self.assertRaises(proxy_routes._CompatBatchGenerationError) as ctx:
+            proxy_routes._build_batch_compat_mappings(
+                mappings,
+                selected_entries,
+                33105,
+            )
+
+        self.assertEqual(ctx.exception.code, "port_conflict")
+        self.assertEqual(ctx.exception.context["port"], 33105)
 
     def test_proxy_list_table_stays_inside_content_rail(self):
         translations = dict(web_admin.get_translations("en"))

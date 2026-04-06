@@ -4,6 +4,7 @@
     selectAll: document.getElementById('select-all'),
     toolbar: document.getElementById('batch-toolbar'),
     countSpan: document.getElementById('selected-count'),
+    compatStartPort: document.getElementById('compat-start-port'),
     batchForm: document.getElementById('batch-form'),
     batchKeys: document.getElementById('batch-keys'),
     csrfInput: document.querySelector('#batch-form input[name="csrf_token"]'),
@@ -336,6 +337,12 @@
     }
     if (action === 'detect-country') {
       startBatchCountryDetection();
+      return;
+    }
+    if (action === 'generate-compat') {
+      submitBatch('/dashboard/proxies/batch/compat', {
+        start_port: elements.compatStartPort ? elements.compatStartPort.value : ''
+      });
       return;
     }
     if (action === 'toggle-pool') {

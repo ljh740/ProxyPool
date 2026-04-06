@@ -5,10 +5,29 @@
     </h3>
   </div>
   {% if mappings %}
+  <div class="card-body" style="padding:0.9rem 1.25rem;border-bottom:1px solid var(--pp-border);">
+    <form method="post"
+          action="/dashboard/compat/batch/delete"
+          id="compat-batch-delete-form"
+          class="d-flex gap-2 align-items-center flex-wrap"
+          style="display:none">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div id="compat-batch-ports"></div>
+      <span style="color:var(--pp-text-secondary);font-size:0.85rem"><span id="compat-selected-count">0</span> {{ i.compat_selected }}</span>
+      <button type="button"
+              class="btn btn-sm"
+              style="border:1px solid var(--pp-border);color:var(--pp-text)"
+              data-compat-batch-action="invert">{{ i.compat_invert }}</button>
+      <button type="submit"
+              class="btn btn-sm"
+              style="background:var(--pp-danger-subtle);color:var(--pp-danger);border:none">{{ i.compat_delete_selected }}</button>
+    </form>
+  </div>
   <div class="table-responsive">
     <table class="table table-vcenter table-striped card-table">
       <thead>
         <tr>
+          <th style="width:40px"><input type="checkbox" class="form-check-input" id="compat-select-all"></th>
           <th>{{ i.compat_table_port }}</th>
           <th>{{ i.compat_table_target_type }}</th>
           <th>{{ i.compat_table_target_value }}</th>
@@ -20,6 +39,7 @@
       <tbody>
       {% for mapping in mappings %}
         <tr>
+          <td><input type="checkbox" class="form-check-input pp-compat-row-check" value="{{ mapping.listen_port }}"></td>
           <td><code>{{ mapping.listen_port }}</code></td>
           <td>
             {% if mapping.target_type == 'entry_key' %}

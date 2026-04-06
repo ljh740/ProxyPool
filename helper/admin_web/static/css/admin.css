@@ -460,15 +460,6 @@ body {
 .pp-proxy-table th {
   vertical-align: middle;
 }
-.pp-proxy-table tbody tr.pp-selected-row {
-  background-color: var(--pp-primary-subtle) !important;
-}
-.pp-proxy-table tbody tr.pp-selected-row > * {
-  background-color: inherit !important;
-}
-.pp-proxy-table tbody tr.pp-selected-row:hover {
-  background-color: var(--pp-primary-subtle) !important;
-}
 .pp-toast-container {
   position: fixed;
   top: 1rem;
@@ -573,6 +564,14 @@ body {
 }
 .table tbody tr:hover {
   background-color: var(--pp-table-row-hover) !important;
+}
+.table tbody tr.pp-selected-row,
+.table-striped > tbody > tr.pp-selected-row:nth-of-type(even),
+.table tbody tr.pp-selected-row:hover {
+  background-color: var(--pp-primary-subtle) !important;
+}
+.table tbody tr.pp-selected-row > * {
+  background-color: inherit !important;
 }
 .table-active,
 .table-active > * {
