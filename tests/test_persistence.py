@@ -209,6 +209,18 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(loaded[1].target_value, "browser-a")
         self.assertTrue(loaded[1].enabled)
 
+    def test_compat_port_mapping_accepts_upper_bound(self):
+        mapping = CompatPortMapping(
+            listen_port=compat_ports.COMPAT_PORT_MAX,
+            target_type="session_name",
+            target_value="browser-max",
+            enabled=True,
+            note="upper-bound",
+        )
+
+        self.assertEqual(mapping.listen_port, compat_ports.COMPAT_PORT_MAX)
+        self.assertEqual(mapping.target_value, "browser-max")
+
     def test_storage_connection_error_handling(self):
         storage = _BrokenStorage()
 

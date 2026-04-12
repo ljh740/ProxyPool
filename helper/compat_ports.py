@@ -4,7 +4,7 @@
 from dataclasses import dataclass
 
 COMPAT_PORT_MIN = 33100
-COMPAT_PORT_MAX = 33199
+COMPAT_PORT_MAX = 33999
 
 TARGET_TYPE_ENTRY_KEY = "entry_key"
 TARGET_TYPE_SESSION_NAME = "session_name"

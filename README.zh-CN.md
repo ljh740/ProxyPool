@@ -41,7 +41,7 @@
    - 或 `Proxies` → `Add Proxy`
    - 或 `Proxies` → `Batch Generate`
 6. 按需配置兼容端口：
-   - `Compat Ports` → 将 `33100-33199` 中的某个端口映射到 `entry_key` 或 `session_name`
+   - `Compat Ports` → 将 `33100-33999` 中的某个端口映射到 `entry_key` 或 `session_name`
 
 ## 启动时配置
 容器启动时只直接读取以下环境变量：
@@ -109,7 +109,7 @@
 - `Batch Generate`：基于同一主机和端口范围生成自动代理
 
 ## 兼容端口
-通过 Web Admin 的 `Compat Ports` 页面管理预先暴露的 `127.0.0.1:33100-33199` 端口范围。
+通过 Web Admin 的 `Compat Ports` 页面管理预先暴露的 `127.0.0.1:33100-33999` 端口范围。
 
 每条映射支持两种目标：
 - `entry_key`：这个本地端口始终绑定到某一条精确上游记录

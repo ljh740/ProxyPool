@@ -39,7 +39,7 @@ A self-hosted proxy management and routing service that gives your apps one stab
 5. Add proxies in Web Admin:
    - `Proxies` → `Import List`, `Add Proxy`, or `Batch Generate`
 6. Optional: configure compatibility ports:
-   - `Compat Ports` → map one of `33100-33199` to an `entry_key` or `session_name`
+   - `Compat Ports` → map one of `33100-33999` to an `entry_key` or `session_name`
 
 ## Bootstrap Configuration
 Only these values are read directly from the container environment at startup:
@@ -105,7 +105,7 @@ The current Web Admin supports:
 - `Batch Generate`: generate auto proxies from one host plus a port range
 
 ## Compatibility Ports
-Use Web Admin `Compat Ports` to manage the pre-published range `127.0.0.1:33100-33199`.
+Use Web Admin `Compat Ports` to manage the pre-published range `127.0.0.1:33100-33999`.
 
 Each mapping supports:
 - `entry_key`: always route that local port to one exact upstream entry
