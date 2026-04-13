@@ -19,6 +19,42 @@ function escapeHtml(text) {
   d.textContent = text;
   return d.innerHTML;
 }
+function padNumber(value) {
+  return value < 10 ? "0" + value : String(value);
+}
+function formatTimestampMs(timestampMs, fallback) {
+  var numeric = Number(timestampMs);
+  if (!isFinite(numeric) || numeric <= 0) return fallback || "-";
+  var date = new Date(numeric);
+  if (isNaN(date.getTime())) return fallback || "-";
+  return date.getFullYear()
+    + "-" + padNumber(date.getMonth() + 1)
+    + "-" + padNumber(date.getDate())
+    + " " + padNumber(date.getHours())
+    + ":" + padNumber(date.getMinutes())
+    + ":" + padNumber(date.getSeconds());
+}
+function renderTimestampCell(entry) {
+  var fallback = entry.timestamp || "-";
+  var timestampMs = entry.timestamp_ms;
+  var attr = "";
+  if (timestampMs !== undefined && timestampMs !== null && timestampMs !== "") {
+    attr = ' data-timestamp-ms="' + escapeHtml(String(timestampMs)) + '"';
+  }
+  return '<code class="pp-log-timestamp"' + attr + '>'
+    + escapeHtml(formatTimestampMs(timestampMs, fallback))
+    + '</code>';
+}
+function applyTimestampFormatting(root) {
+  var scope = root || document;
+  var nodes = scope.querySelectorAll(".pp-log-timestamp[data-timestamp-ms]");
+  Array.prototype.forEach.call(nodes, function(node) {
+    node.textContent = formatTimestampMs(
+      node.getAttribute("data-timestamp-ms"),
+      node.textContent || "-"
+    );
+  });
+}
 function levelBadgeClass(level) {
   if (level === "ERROR" || level === "CRITICAL") return "pp-log-error";
   if (level === "WARNING") return "pp-log-warning";
@@ -41,7 +77,7 @@ function fetchLogs() {
       } else {
         tbody.innerHTML = data.entries.map(function(entry) {
           return '<tr>'
-            + '<td><code>' + escapeHtml(entry.timestamp || '-') + '</code></td>'
+            + '<td>' + renderTimestampCell(entry) + '</td>'
             + '<td><span class="pp-badge ' + levelBadgeClass(entry.level || '') + '">' + escapeHtml(entry.level || '-') + '</span></td>'
             + '<td><code>' + escapeHtml(entry.client_ip || '-') + '</code></td>'
             + '<td>' + escapeHtml(entry.username || '-') + '</td>'
@@ -73,4 +109,5 @@ function fetchLogs() {
       }
     });
 }
+applyTimestampFormatting(document);
 setInterval(fetchLogs, 5000);

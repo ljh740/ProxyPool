@@ -32,6 +32,7 @@ class RingBufferHandler(logging.Handler):
     def emit(self, record):
         try:
             entry = {
+                "timestamp_ms": int(record.created * 1000),
                 "timestamp": time.strftime(
                     "%Y-%m-%d %H:%M:%S", time.localtime(record.created)
                 ),

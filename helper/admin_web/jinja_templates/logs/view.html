@@ -52,7 +52,7 @@
         {% endif %}
         {% for entry in entries %}
         <tr>
-          <td><code>{{ entry.get("timestamp", "-") }}</code></td>
+          <td><code class="pp-log-timestamp" data-timestamp-ms="{{ entry.get("timestamp_ms", "") }}">{{ entry.get("timestamp", "-") }}</code></td>
           <td><span class="pp-badge {% if entry.get("level", "") in ("ERROR", "CRITICAL") %}pp-log-error{% elif entry.get("level", "") == "WARNING" %}pp-log-warning{% elif entry.get("level", "") == "DEBUG" %}pp-log-debug{% else %}pp-log-info{% endif %}">{{ entry.get("level", "-") }}</span></td>
           <td><code>{{ entry.get("client_ip", "-") }}</code></td>
           <td>{{ entry.get("username", "-") }}</td>
