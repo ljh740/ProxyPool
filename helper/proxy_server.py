@@ -1121,13 +1121,30 @@ def _stop_compat_listener(listener):
             listener.thread.join(timeout=1.0)
 
 
+def _stop_compat_listeners(listeners):
+    workers = []
+    for listener in listeners:
+        worker = threading.Thread(
+            target=_stop_compat_listener,
+            args=(listener,),
+            name="compat-stop-%s" % listener.mapping.listen_port,
+            daemon=True,
+        )
+        worker.start()
+        workers.append(worker)
+    for worker in workers:
+        worker.join()
+
+
 def close_compat_listeners(parent_server):
     if parent_server is None:
         return
     registry = _compat_listener_registry(parent_server)
+    listeners = []
     for port, listener in list(registry.items()):
-        _stop_compat_listener(listener)
         registry.pop(port, None)
+        listeners.append(listener)
+    _stop_compat_listeners(listeners)
 
 
 def reload_compat_listeners(parent_server, storage=None):
@@ -1147,11 +1164,13 @@ def reload_compat_listeners(parent_server, storage=None):
         if mapping.enabled
     }
 
+    listeners_to_stop = []
     for port, listener in list(registry.items()):
         mapping = desired.get(port)
         if mapping is None or listener.mapping != mapping:
-            _stop_compat_listener(listener)
             registry.pop(port, None)
+            listeners_to_stop.append(listener)
+    _stop_compat_listeners(listeners_to_stop)
 
     bind_host = parent_server.config.listen_host
     for port, mapping in desired.items():

@@ -2,6 +2,7 @@ import importlib
 import os
 import socket
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -472,6 +473,36 @@ class ProxyServerTests(unittest.TestCase):
         fake_server.shutdown.assert_called_once()
         fake_server.server_close.assert_called_once()
         fake_thread.join.assert_called_once()
+
+    def test_reload_compat_listeners_stops_removed_servers_in_parallel(self):
+        parent_server = MagicMock()
+        parent_server.config.listen_host = "0.0.0.0"
+        parent_server.router = MagicMock()
+        storage = MagicMock()
+        parent_server.compat_listeners = {}
+
+        for port in (33100, 33101, 33102, 33103):
+            listener = MagicMock()
+            listener.mapping = CompatPortMapping(
+                listen_port=port,
+                target_type="session_name",
+                target_value="browser-%s" % port,
+            )
+            parent_server.compat_listeners[port] = listener
+
+        def slow_stop(listener):
+            del listener
+            time.sleep(0.1)
+
+        with patch("persistence.load_compat_port_mappings", return_value=[]), \
+             patch.object(proxy_server, "_stop_compat_listener", side_effect=slow_stop) as stop_mock:
+            started_at = time.perf_counter()
+            registry = proxy_server.reload_compat_listeners(parent_server, storage)
+            elapsed = time.perf_counter() - started_at
+
+        self.assertEqual(registry, {})
+        self.assertEqual(stop_mock.call_count, 4)
+        self.assertLess(elapsed, 0.25)
 
     def test_main_bootstraps_router_from_storage_proxy_list(self):
         app_config = AppConfig.from_mapping({
