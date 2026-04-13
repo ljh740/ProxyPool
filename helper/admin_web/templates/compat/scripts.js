@@ -59,6 +59,62 @@
     });
   }
 
+  function compatPortLines(ports) {
+    return ports.map((port) => `http://127.0.0.1:${port}`);
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch (error) {}
+    }
+
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('readonly', '');
+    helper.style.position = 'fixed';
+    helper.style.top = '0';
+    helper.style.left = '0';
+    helper.style.opacity = '0';
+    helper.style.pointerEvents = 'none';
+    document.body.appendChild(helper);
+    helper.focus();
+    helper.select();
+    helper.setSelectionRange(0, helper.value.length);
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } finally {
+      document.body.removeChild(helper);
+    }
+    if (!copied) {
+      throw new Error('copy_failed');
+    }
+  }
+
+  async function copyCompatPorts(ports) {
+    if (!ports.length) return;
+    await copyText(compatPortLines(ports).join('\n'));
+  }
+
+  function exportCompatPorts(ports) {
+    if (!ports.length) return;
+    const lines = compatPortLines(ports);
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    const objectUrl = window.URL.createObjectURL(blob);
+    link.href = objectUrl;
+    link.download = 'compat-ports.txt';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(objectUrl);
+    }, 0);
+  }
+
   function syncBatchToolbar() {
     const toolbar = compatBatchForm();
     const checks = compatRowChecks();
@@ -191,6 +247,36 @@
 
     if (editButton) {
       applyEditState(editButton);
+      return;
+    }
+    if (batchActionButton && batchActionButton.dataset.compatBatchAction === 'copy') {
+      const ports = selectedPorts();
+      if (!ports.length) {
+        showToast(i18n.dataset.noSelection || fallbackMessage(), 'error', 4000);
+        syncBatchToolbar();
+        return;
+      }
+      copyCompatPorts(ports)
+        .then(() => {
+          showToast(
+            formatTemplate(i18n.dataset.copySuccess || '', { count: ports.length }),
+            'success',
+            2200
+          );
+        })
+        .catch(() => {
+          showToast(i18n.dataset.copyFailed || fallbackMessage(), 'error', 4000);
+        });
+      return;
+    }
+    if (batchActionButton && batchActionButton.dataset.compatBatchAction === 'export') {
+      const ports = selectedPorts();
+      if (!ports.length) {
+        showToast(i18n.dataset.noSelection || fallbackMessage(), 'error', 4000);
+        syncBatchToolbar();
+        return;
+      }
+      exportCompatPorts(ports);
       return;
     }
     if (batchActionButton && batchActionButton.dataset.compatBatchAction === 'invert') {

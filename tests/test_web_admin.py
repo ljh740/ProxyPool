@@ -470,9 +470,23 @@ class TestAdminThemeStyles(unittest.TestCase):
 
         self.assertIn('id="compat-select-all"', compat_mappings_page)
         self.assertIn('id="compat-batch-delete-form"', compat_mappings_page)
+        self.assertIn('data-compat-batch-action="copy"', compat_mappings_page)
+        self.assertIn('data-compat-batch-action="export"', compat_mappings_page)
         self.assertIn('data-compat-batch-action="invert"', compat_mappings_page)
         self.assertIn("compat-batch-delete-form", compat_scripts)
         self.assertIn("pp-compat-row-check", compat_scripts)
+        self.assertIn("copyCompatPorts", compat_scripts)
+        self.assertIn("exportCompatPorts", compat_scripts)
+
+    def test_import_template_supports_generate_compat_ports(self):
+        import_page = admin_resources.load_jinja_template_source("proxies/import_form.html")
+        import_scripts = admin_resources.load_template_source("proxies/import_scripts.js")
+
+        self.assertIn('id="generate_compat_ports"', import_page)
+        self.assertIn('id="compat_start_port"', import_page)
+        self.assertIn('name="generate_compat_ports"', import_page)
+        self.assertIn("syncCompatOptions", import_scripts)
+        self.assertIn("compat_start_port", import_scripts)
 
     def test_proxy_list_state_filters_by_country_and_preserves_urls(self):
         entries = [

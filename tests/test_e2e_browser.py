@@ -646,6 +646,83 @@ class TestE2EBrowser(unittest.TestCase):
             [],
         )
 
+    def test_compat_batch_export_downloads_selected_ports(self):
+        self._context.close()
+        self._context = self._browser.new_context(accept_downloads=True)
+        self.page = self._context.new_page()
+
+        self._login()
+        self._reset_storage()
+        persistence.save_compat_port_mappings(
+            self._storage,
+            [
+                CompatPortMapping(
+                    listen_port=33100,
+                    target_type="session_name",
+                    target_value="export-a",
+                ),
+                CompatPortMapping(
+                    listen_port=33101,
+                    target_type="entry_key",
+                    target_value="export-b",
+                ),
+            ],
+        )
+        self.page.goto(f"{self.base_url}/dashboard/compat")
+        self.page.locator(".pp-compat-row-check").nth(0).check()
+        self.page.locator(".pp-compat-row-check").nth(1).check()
+
+        with self.page.expect_download() as download_info:
+            self.page.click('button[data-compat-batch-action="export"]')
+
+        download = download_info.value
+        self.assertEqual(download.suggested_filename, "compat-ports.txt")
+        with open(download.path(), "r", encoding="utf-8") as handle:
+            self.assertEqual(
+                handle.read(),
+                "http://127.0.0.1:33100\nhttp://127.0.0.1:33101\n",
+            )
+
+    def test_compat_batch_copy_writes_selected_ports_to_clipboard(self):
+        self.page.add_init_script(
+            """
+            Object.defineProperty(navigator, 'clipboard', {
+              configurable: true,
+              value: {
+                writeText: (text) => {
+                  window.__compatCopiedText = text;
+                  return Promise.resolve();
+                }
+              }
+            });
+            """
+        )
+
+        self._login()
+        self._reset_storage()
+        persistence.save_compat_port_mappings(
+            self._storage,
+            [
+                CompatPortMapping(
+                    listen_port=33110,
+                    target_type="session_name",
+                    target_value="copy-a",
+                ),
+                CompatPortMapping(
+                    listen_port=33111,
+                    target_type="entry_key",
+                    target_value="copy-b",
+                ),
+            ],
+        )
+        self.page.goto(f"{self.base_url}/dashboard/compat")
+        self.page.locator(".pp-compat-row-check").nth(0).check()
+        self.page.locator(".pp-compat-row-check").nth(1).check()
+        self.page.click('button[data-compat-batch-action="copy"]')
+        self.page.wait_for_function(
+            "() => window.__compatCopiedText === 'http://127.0.0.1:33110\\nhttp://127.0.0.1:33111'"
+        )
+
     # ====================================================================
     # Tier 5: Proxy CRUD via Browser
     # ====================================================================

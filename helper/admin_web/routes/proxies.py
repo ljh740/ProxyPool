@@ -460,6 +460,11 @@ def _render_batch_form_page(runtime, ui, *, form_data, error=""):
 
 
 def _render_import_form_page(runtime, ui, *, form_data, error=""):
+    storage = runtime.get_storage()
+    compat_mappings = list(runtime.load_compat_mappings(storage))
+    compat_default_start_port = _next_free_compat_port(compat_mappings)
+    if compat_default_start_port is None:
+        compat_default_start_port = COMPAT_PORT_MIN
     content = render_template(
         "proxies/import_form.html",
         schemes=sorted(SUPPORTED_UPSTREAM_SCHEMES),
@@ -468,6 +473,12 @@ def _render_import_form_page(runtime, ui, *, form_data, error=""):
         default_password=form_data.get("default_password", ""),
         proxy_list_text=form_data.get("proxy_list_text", ""),
         probe_before_import=form_data.get("probe_before_import", False),
+        generate_compat_ports=form_data.get("generate_compat_ports", False),
+        compat_start_port=form_data.get(
+            "compat_start_port", str(compat_default_start_port)
+        ),
+        compat_port_min=COMPAT_PORT_MIN,
+        compat_port_max=COMPAT_PORT_MAX,
         error=error,
         i=get_translations(ui.locale),
     )
@@ -504,7 +515,7 @@ def _replace_auto_entries(existing_entries, new_entries):
 def _append_manual_entries(existing_entries, new_entries):
     merged = list(existing_entries)
     existing_keys = {entry.key for entry in merged}
-    imported_count = 0
+    imported_entries = []
     for entry in new_entries:
         normalized = UpstreamEntry(
             key=entry.key,
@@ -518,8 +529,8 @@ def _append_manual_entries(existing_entries, new_entries):
             continue
         merged.append(normalized)
         existing_keys.add(normalized.key)
-        imported_count += 1
-    return merged, imported_count
+        imported_entries.append(normalized)
+    return merged, imported_entries
 
 def _build_import_form_data():
     return {
@@ -528,7 +539,63 @@ def _build_import_form_data():
         "default_password": request.form.get("default_password", ""),
         "proxy_list_text": request.form.get("proxy_list_text", ""),
         "probe_before_import": request.form.get("probe_before_import", "0") == "1",
+        "generate_compat_ports": request.form.get("generate_compat_ports", "0") == "1",
+        "compat_start_port": request.form.get("compat_start_port", "").strip(),
     }
+
+
+def _import_compat_error_message(locale, exc):
+    if exc.code == "invalid_start_port":
+        return t(
+            "proxies_compat_invalid_start_port",
+            locale,
+            min=COMPAT_PORT_MIN,
+            max=COMPAT_PORT_MAX,
+        )
+    if exc.code == "port_range_exhausted":
+        return t(
+            "proxies_compat_port_range_exhausted",
+            locale,
+            start=exc.context["start"],
+            max=exc.context["max"],
+        )
+    return t(
+        "proxies_compat_port_conflict",
+        locale,
+        port=exc.context["port"],
+    )
+
+
+def _build_import_compat_mappings(runtime, storage, imported_entries, form_data, locale):
+    if not form_data.get("generate_compat_ports"):
+        return None, []
+
+    compat_mappings = list(runtime.load_compat_mappings(storage))
+    start_port = form_data.get("compat_start_port", "").strip()
+    if not start_port:
+        next_port = _next_free_compat_port(compat_mappings)
+        start_port = str(next_port if next_port is not None else COMPAT_PORT_MIN)
+    try:
+        return _build_batch_compat_mappings(
+            compat_mappings,
+            imported_entries,
+            start_port,
+        )
+    except _CompatBatchGenerationError as exc:
+        raise ValueError(_import_compat_error_message(locale, exc)) from exc
+
+
+def _build_import_success_message(locale, imported_entries, generated_mappings):
+    if generated_mappings:
+        return t(
+            "import_completed_with_compat",
+            locale,
+            count=len(imported_entries),
+            compat_count=len(generated_mappings),
+            first=generated_mappings[0].listen_port,
+            last=generated_mappings[-1].listen_port,
+        )
+    return t("import_completed", locale, count=len(imported_entries))
 
 
 def _parse_import_entries(form_data, locale):
@@ -898,6 +965,7 @@ def register_proxy_routes(blueprint, runtime):
                 "default_password": "",
                 "proxy_list_text": "",
                 "probe_before_import": False,
+                "generate_compat_ports": False,
             },
         )
 
@@ -1168,18 +1236,36 @@ def register_proxy_routes(blueprint, runtime):
 
         storage = runtime.get_storage()
         existing = list(runtime.load_entries(storage))
-        merged, imported_count = _append_manual_entries(
+        merged, imported_entries = _append_manual_entries(
             existing,
             [entry for _line_number, entry in parsed_entries],
         )
+        imported_count = len(imported_entries)
         if imported_count == 0:
             return _render_error(t("import_no_new_entries", ui.locale))
+        try:
+            updated_compat_mappings, generated_mappings = _build_import_compat_mappings(
+                runtime,
+                storage,
+                imported_entries,
+                form_data,
+                ui.locale,
+            )
+        except ValueError as exc:
+            return _render_error(str(exc))
         runtime.save_entries(merged, storage)
+        if updated_compat_mappings is not None:
+            runtime.save_compat_mappings(updated_compat_mappings, storage)
         runtime.trigger_reload()
+        success_message = _build_import_success_message(
+            ui.locale,
+            imported_entries,
+            generated_mappings,
+        )
         return runtime.redirect(
             build_redirect_location(
                 "/dashboard/proxies",
-                msg=t("import_completed", ui.locale, count=imported_count),
+                msg=success_message,
             ),
             ui=ui,
         )
@@ -1243,26 +1329,48 @@ def register_proxy_routes(blueprint, runtime):
 
         storage = runtime.get_storage()
         existing = list(runtime.load_entries(storage))
-        merged, imported_count = _append_manual_entries(existing, job.successful_entries)
+        form_data = _build_import_form_data()
+        merged, imported_entries = _append_manual_entries(existing, job.successful_entries)
+        imported_count = len(imported_entries)
         if imported_count == 0:
             return _json_response(
                 {"ok": False, "error": t("import_no_new_entries", ui.locale)},
                 status=400,
             )
+        try:
+            updated_compat_mappings, generated_mappings = _build_import_compat_mappings(
+                runtime,
+                storage,
+                imported_entries,
+                form_data,
+                ui.locale,
+            )
+        except ValueError as exc:
+            return _json_response(
+                {"ok": False, "error": str(exc)},
+                status=400,
+            )
         runtime.save_entries(merged, storage)
+        if updated_compat_mappings is not None:
+            runtime.save_compat_mappings(updated_compat_mappings, storage)
         runtime.trigger_reload()
         _remove_job(
             job_id,
             job_store=_IMPORT_CHECK_JOBS,
             jobs_lock=_IMPORT_CHECK_JOBS_LOCK,
         )
+        success_message = _build_import_success_message(
+            ui.locale,
+            imported_entries,
+            generated_mappings,
+        )
         return _json_response(
             {
                 "ok": True,
-                "message": t("import_completed", ui.locale, count=imported_count),
+                "message": success_message,
                 "redirect_url": build_redirect_location(
                     "/dashboard/proxies",
-                    msg=t("import_completed", ui.locale, count=imported_count),
+                    msg=success_message,
                 ),
             }
         )

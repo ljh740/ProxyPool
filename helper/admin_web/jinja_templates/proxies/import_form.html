@@ -48,6 +48,28 @@
             <label class="form-check-label" for="probe_before_import">{{ i.import_probe_before }}</label>
             <div class="form-hint">{{ i.import_probe_before_hint }}</div>
           </div>
+          <div class="card mb-3" style="background:var(--pp-surface-secondary);border:1px solid var(--pp-border);">
+            <div class="card-body" style="padding:1rem 1.25rem;">
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" role="switch" id="generate_compat_ports" name="generate_compat_ports" value="1" {% if generate_compat_ports %}checked{% endif %}>
+                <label class="form-check-label" for="generate_compat_ports">{{ i.import_generate_compat_ports }}</label>
+                <div class="form-hint">{{ i.import_generate_compat_ports_hint }}</div>
+              </div>
+              <div class="row g-2 align-items-end">
+                <div class="col-12 col-md-4">
+                  <label class="form-label" for="compat_start_port">{{ i.proxies_compat_start_port }}</label>
+                  <input type="number"
+                         class="form-control"
+                         id="compat_start_port"
+                         name="compat_start_port"
+                         min="{{ compat_port_min }}"
+                         max="{{ compat_port_max }}"
+                         value="{{ compat_start_port }}">
+                  <span class="form-hint">{{ i.import_compat_start_port_hint }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="card" style="background:var(--pp-surface-secondary);border:1px solid var(--pp-border);">
             <div class="card-body" style="padding:1rem 1.25rem;">
               <div class="fw-semibold mb-2">{{ i.import_supported_formats }}</div>

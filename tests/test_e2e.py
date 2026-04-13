@@ -1102,6 +1102,8 @@ class TestE2E(unittest.TestCase):
         resp = self.session.get(self.base_url + "/dashboard/proxies/import")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("proxy_list_text", resp.text)
+        self.assertIn("generate_compat_ports", resp.text)
+        self.assertIn("compat_start_port", resp.text)
 
     def test_import_proxy_list_adds_manual_entries(self):
         self._login()
@@ -1149,6 +1151,53 @@ class TestE2E(unittest.TestCase):
         self.assertEqual(second.last_hop.username, "fallback-user")
         self.assertTrue(any(entry.key == manual.key for entry in entries))
         self.assertTrue(any(entry.key == auto.key for entry in entries))
+        self.assertEqual(persistence.load_compat_port_mappings(self._storage), [])
+
+    def test_import_proxy_list_generates_compat_mappings_when_requested(self):
+        self._login()
+        self._reset_storage()
+        auto = _make_entry("auto_keep", "auto-keep.example.com", 10002, source_tag="auto")
+        persistence.save_proxy_list(self._storage, [auto])
+
+        resp = self._post_with_csrf(
+            "/dashboard/proxies/import",
+            form_path="/dashboard/proxies/import",
+            data={
+                "default_scheme": "socks5",
+                "default_username": "fallback-user",
+                "default_password": "fallback-pass",
+                "proxy_list_text": "\n".join(
+                    [
+                        "compat-one.example.com:23001",
+                        "compat-two.example.com:23002",
+                    ]
+                ),
+                "generate_compat_ports": "1",
+                "compat_start_port": "33120",
+            },
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/dashboard/proxies", resp.headers["Location"])
+
+        entries = persistence.load_proxy_list(self._storage)
+        compat_entries = [
+            entry
+            for entry in entries
+            if entry.last_hop.host in {"compat-one.example.com", "compat-two.example.com"}
+        ]
+        self.assertEqual(len(compat_entries), 2)
+
+        mappings = persistence.load_compat_port_mappings(self._storage)
+        self.assertEqual(
+            [
+                (mapping.listen_port, mapping.target_type, mapping.target_value, mapping.note)
+                for mapping in mappings
+            ],
+            [
+                (33120, "entry_key", compat_entries[0].key, "compat-one.example.com:23001"),
+                (33121, "entry_key", compat_entries[1].key, "compat-two.example.com:23002"),
+            ],
+        )
 
     def test_import_proxy_list_rejects_invalid_line(self):
         self._login()
@@ -1233,6 +1282,78 @@ class TestE2E(unittest.TestCase):
         self.assertTrue(any(entry.last_hop.host == "check-ok.example.com" for entry in entries))
         self.assertFalse(any(entry.last_hop.host == "check-bad.example.com" for entry in entries))
         self.assertTrue(any(entry.key == auto.key for entry in entries))
+        self.assertEqual(persistence.load_compat_port_mappings(self._storage), [])
+
+    def test_import_proxy_list_check_then_commit_generates_compat_mappings(self):
+        self._login()
+        self._reset_storage()
+        csrf_token = self._csrf_token_for("/dashboard/proxies/import")
+
+        with patch.object(
+            proxy_routes,
+            "_probe_import_entry",
+            side_effect=[(True, ""), (False, "dial timeout")],
+        ):
+            start_resp = self.session.post(
+                self.base_url + "/dashboard/proxies/import/check",
+                headers={"X-Requested-With": "XMLHttpRequest"},
+                data={
+                    "csrf_token": csrf_token,
+                    "default_scheme": "socks5",
+                    "default_username": "fallback-user",
+                    "default_password": "fallback-pass",
+                    "proxy_list_text": "\n".join(
+                        [
+                            "commit-compat-ok.example.com:24001",
+                            "commit-compat-bad.example.com:24002",
+                        ]
+                    ),
+                    "generate_compat_ports": "1",
+                    "compat_start_port": "33130",
+                },
+            )
+            self.assertEqual(start_resp.status_code, 200)
+            job_id = start_resp.json()["job"]["job_id"]
+
+            status_payload = None
+            for _ in range(40):
+                status_resp = self.session.get(
+                    self.base_url + f"/dashboard/proxies/import/check/{job_id}",
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                )
+                self.assertEqual(status_resp.status_code, 200)
+                status_payload = status_resp.json()
+                if status_payload["job"]["status"] == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertIsNotNone(status_payload)
+        self.assertEqual(status_payload["job"]["success_count"], 1)
+
+        commit_resp = self.session.post(
+            self.base_url + "/dashboard/proxies/import/commit",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            data={
+                "csrf_token": csrf_token,
+                "job_id": job_id,
+                "generate_compat_ports": "1",
+                "compat_start_port": "33130",
+            },
+        )
+        self.assertEqual(commit_resp.status_code, 200)
+        commit_payload = commit_resp.json()
+        self.assertTrue(commit_payload["ok"])
+
+        entries = persistence.load_proxy_list(self._storage)
+        saved_entry = next(
+            entry for entry in entries if entry.last_hop.host == "commit-compat-ok.example.com"
+        )
+        mappings = persistence.load_compat_port_mappings(self._storage)
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0].listen_port, 33130)
+        self.assertEqual(mappings[0].target_type, "entry_key")
+        self.assertEqual(mappings[0].target_value, saved_entry.key)
+        self.assertEqual(mappings[0].note, "commit-compat-ok.example.com:24001")
 
     def test_ajax_toggle_pool_returns_json_without_redirect(self):
         self._login()

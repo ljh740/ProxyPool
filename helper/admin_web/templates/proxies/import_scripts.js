@@ -4,6 +4,8 @@
   if (!form) return;
 
   var checkbox = document.getElementById('probe_before_import');
+  var compatCheckbox = document.getElementById('generate_compat_ports');
+  var compatStartPort = document.getElementById('compat_start_port');
   var submitBtn = form.querySelector('button[type="submit"]');
   var csrfInput = form.querySelector('input[name="csrf_token"]');
   var i18n = document.getElementById('proxy-import-i18n');
@@ -24,6 +26,11 @@
   var pollingToken = 0;
 
   if (!checkbox || !submitBtn || !csrfInput || !i18n || !modalEl) return;
+
+  function syncCompatOptions() {
+    if (!compatCheckbox || !compatStartPort) return;
+    compatStartPort.disabled = !compatCheckbox.checked;
+  }
 
   function dataset(key) {
     return i18n.dataset[key] || '';
@@ -258,6 +265,10 @@
     }
   });
 
+  if (compatCheckbox) {
+    compatCheckbox.addEventListener('change', syncCompatOptions);
+  }
+
   if (commitBtn) {
     commitBtn.addEventListener('click', async function() {
       if (!activeJobId || commitBtn.disabled) return;
@@ -296,5 +307,6 @@
       });
     }
   }
+  syncCompatOptions();
 })();
 </script>
