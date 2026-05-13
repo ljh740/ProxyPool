@@ -333,7 +333,7 @@
   "compat_intro_title": "How It Works",
   "compat_intro_bind_label": "Docker Publish",
   "compat_intro_body": "Docker can only publish ports declared in advance. This project exposes a fixed localhost range in docker-compose, and this page decides which of those ports are active.",
-  "compat_intro_note": "Each active port creates a separate no-auth HTTP listener. Use these ports for clients that cannot send proxy credentials, such as undetected-chromedriver.",
+  "compat_intro_note": "Each active port creates a separate no-auth local listener that accepts HTTP and SOCKS5 inbound connections. Use these ports for clients that cannot send proxy credentials, such as undetected-chromedriver.",
   "compat_fixed_range_label": "Available Range",
   "compat_existing_title": "Current Mappings",
   "compat_table_port": "Port",

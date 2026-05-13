@@ -91,10 +91,10 @@ On the main authenticated port:
 - `socks5h` uses the same SOCKS5 listener and keeps destination hostname resolution on the proxy side when the client sends a domain target.
 
 For clients that cannot send proxy credentials, use a compatibility port instead:
-- Example exact entry binding: `http://127.0.0.1:33100`
-- Example sticky session binding: map `33101` to `chrome-profile-a`, then use `http://127.0.0.1:33101`
+- Example exact entry binding: `http://127.0.0.1:33100` or `socks5://127.0.0.1:33100`
+- Example sticky session binding: map `33101` to `chrome-profile-a`, then use `http://127.0.0.1:33101` or `socks5://127.0.0.1:33101`
 
-Compatibility ports are no-auth HTTP listeners managed in Web Admin.
+Compatibility ports are no-auth local listeners managed in Web Admin.
 They use a fixed Docker-published range because Docker cannot expose new host ports dynamically after the container starts.
 
 ## Managing Proxies
@@ -114,7 +114,7 @@ Each mapping supports:
 Notes:
 - The main authenticated proxy on `3128` remains unchanged.
 - Compatibility listeners are separate no-auth ports intended for tools such as `undetected-chromedriver`.
-- Compatibility listeners remain HTTP-only; inbound SOCKS5 support is only enabled on the main authenticated listener.
+- Compatibility listeners accept both inbound HTTP and inbound SOCKS5 connections.
 - If an `entry_key` mapping points to an entry that is later removed, requests on that compatibility port will fail until you update the mapping.
 - `session_name` is not a unique per-entry access key. The unique direct-access identifier is `entry_key`.
 

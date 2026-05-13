@@ -309,7 +309,7 @@
   "compat_intro_title": "工作方式",
   "compat_intro_bind_label": "Docker 暴露",
   "compat_intro_body": "Docker 只能暴露预先声明的端口。本项目在 docker-compose 里预先暴露一段 localhost 固定端口范围，而这个页面决定其中哪些端口处于启用状态。",
-  "compat_intro_note": "每个启用的端口都会创建一个独立的无认证 HTTP 监听器。这些端口适合无法发送代理账密的客户端，比如 undetected-chromedriver。",
+  "compat_intro_note": "每个启用的端口都会创建一个独立的无认证本地监听器，同时接受 HTTP 和 SOCKS5 入站连接。这些端口适合无法发送代理账密的客户端，比如 undetected-chromedriver。",
   "compat_fixed_range_label": "可用范围",
   "compat_existing_title": "当前映射",
   "compat_table_port": "端口",
