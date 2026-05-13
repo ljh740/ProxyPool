@@ -1023,6 +1023,14 @@ class TestPublicApiRoutes(unittest.TestCase):
             payload["data"]["mapping"]["access"]["http_proxy"],
             "http://127.0.0.1:33100",
         )
+        self.assertEqual(
+            payload["data"]["mapping"]["access"]["socks5_proxy"],
+            "socks5://127.0.0.1:33100",
+        )
+        self.assertEqual(
+            payload["data"]["mapping"]["access"]["socks5h_proxy"],
+            "socks5h://127.0.0.1:33100",
+        )
         self.assertEqual(len(load_compat_port_mappings(self.storage)), 1)
         self.assertEqual(len(self.reload_calls), 1)
 
@@ -1062,6 +1070,14 @@ class TestPublicApiRoutes(unittest.TestCase):
         self.assertEqual(
             mappings_payload["data"]["items"][0]["mapping"]["access"]["http_proxy"],
             "http://127.0.0.1:33100",
+        )
+        self.assertEqual(
+            mappings_payload["data"]["items"][0]["mapping"]["access"]["socks5_proxy"],
+            "socks5://127.0.0.1:33100",
+        )
+        self.assertEqual(
+            mappings_payload["data"]["items"][0]["mapping"]["access"]["socks5h_proxy"],
+            "socks5h://127.0.0.1:33100",
         )
 
     def test_entries_list_returns_persisted_tags_without_enrichment(self):

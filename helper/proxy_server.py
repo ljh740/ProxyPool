@@ -1072,10 +1072,61 @@ class ProxyRequestHandler(HttpProxyRequestHandler):
             pass
 
 
-class CompatProxyRequestHandler(HttpProxyRequestHandler):
+class CompatProxyRequestHandler(ProxyRequestHandler):
     def authenticate(self, headers):
         del headers
         return self.server.mapping.target_value
+
+    def handle_socks5_session(self):
+        self.connection.settimeout(self.server.config.connect_timeout)
+        request = None
+        username = self.server.mapping.target_value
+        upstream_entry = None
+        try:
+            methods = read_socks5_methods(self.rfile)
+            if SOCKS_METHOD_NO_AUTH not in methods:
+                self.send_socks5_method_selection(SOCKS_METHOD_NO_ACCEPTABLE)
+                return
+            self.send_socks5_method_selection(SOCKS_METHOD_NO_AUTH)
+
+            request = read_socks5_request(self.rfile)
+            upstream_entry = self.resolve_upstream_entry(username)
+            if upstream_entry is None:
+                self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+                self.log_request_result(
+                    request,
+                    username,
+                    upstream_entry,
+                    "client_error:no_upstream",
+                )
+                return
+            self.handle_socks5_connect(request, username, upstream_entry)
+        except Socks5ProtocolError as exc:
+            if exc.reply_code is not None:
+                self.send_socks5_reply(exc.reply_code)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"client_error:socks5:{exc}",
+            )
+        except UpstreamError as exc:
+            self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"upstream_error:{exc}",
+            )
+        except Exception as exc:
+            LOGGER.exception("Unhandled SOCKS5 compatibility proxy error")
+            self.send_socks5_reply(SOCKS_REPLY_GENERAL_FAILURE)
+            self.log_request_result(
+                request,
+                username,
+                upstream_entry,
+                f"internal_error:{exc}",
+            )
 
     def resolve_upstream_entry(self, username):
         del username

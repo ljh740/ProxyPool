@@ -282,6 +282,77 @@ class ProxyServerTests(unittest.TestCase):
         )
         server.router.route_entry.assert_not_called()
 
+    def test_compat_handler_accepts_socks5_connect_requests_without_auth(self):
+        server = self.make_server(route_entry=self.make_entry())
+        server.mapping = CompatPortMapping(
+            listen_port=33100,
+            target_type="session_name",
+            target_value="browser-a",
+        )
+        payload = _build_socks5_greeting(
+            [proxy_server.SOCKS_METHOD_NO_AUTH, proxy_server.SOCKS_METHOD_USERNAME_PASSWORD]
+        ) + _build_socks5_connect_request("example.com", 443)
+        upstream_socket = MagicMock()
+
+        with patch.object(
+            proxy_server,
+            "open_upstream_tunnel",
+            return_value=upstream_socket,
+        ) as open_tunnel_mock, patch.object(
+            proxy_server,
+            "relay_bidirectional",
+        ) as relay_mock:
+            response = self.run_handler(
+                payload,
+                server=server,
+                handler_class=proxy_server.CompatProxyRequestHandler,
+            )
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_NO_AUTH,
+                ]
+            )
+            + proxy_server.build_socks5_reply(proxy_server.SOCKS_REPLY_SUCCEEDED),
+        )
+        server.router.route_entry.assert_called_once_with("browser-a")
+        open_tunnel_mock.assert_called_once_with(
+            server.config,
+            server.router.route_entry.return_value,
+            "example.com",
+            443,
+        )
+        relay_mock.assert_called_once()
+        upstream_socket.close.assert_called_once()
+
+    def test_compat_handler_rejects_socks5_when_no_auth_not_offered(self):
+        server = self.make_server(route_entry=self.make_entry())
+        server.mapping = CompatPortMapping(
+            listen_port=33100,
+            target_type="session_name",
+            target_value="browser-a",
+        )
+
+        response = self.run_handler(
+            _build_socks5_greeting([proxy_server.SOCKS_METHOD_USERNAME_PASSWORD]),
+            server=server,
+            handler_class=proxy_server.CompatProxyRequestHandler,
+        )
+
+        self.assertEqual(
+            response,
+            bytes(
+                [
+                    proxy_server.SOCKS_VERSION,
+                    proxy_server.SOCKS_METHOD_NO_ACCEPTABLE,
+                ]
+            ),
+        )
+        server.router.route_entry.assert_not_called()
+
     def test_split_host_port_supports_default(self):
         self.assertEqual(split_host_port("example.com", 80), ("example.com", 80))
         self.assertEqual(split_host_port("example.com:443", 80), ("example.com", 443))

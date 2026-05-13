@@ -118,6 +118,8 @@ def _compat_access(app_config, listen_port):
         "listen_port": listen_port,
         "requires_auth": False,
         "http_proxy": "http://%s:%s" % (connect_host, listen_port),
+        "socks5_proxy": "socks5://%s:%s" % (connect_host, listen_port),
+        "socks5h_proxy": "socks5h://%s:%s" % (connect_host, listen_port),
     }
 
 
@@ -783,12 +785,12 @@ def _api_spec(runtime):
         {
             "title": "Allocate a no-auth compatibility port",
             "description": (
-                "Useful when the caller cannot send proxy credentials and only needs a local HTTP proxy endpoint."
+                "Useful when the caller cannot send proxy credentials and needs a local no-auth proxy endpoint."
             ),
             "steps": [
                 "Call POST /api/v1/compat/allocate.",
-                "Read data.mapping.access.http_proxy.",
-                "Use the returned local proxy URL directly in your automation client.",
+                "Read data.mapping.access.http_proxy or data.mapping.access.socks5_proxy.",
+                "Use one of the returned local proxy URLs directly in your automation client.",
             ],
         },
         {
@@ -800,7 +802,7 @@ def _api_spec(runtime):
             "steps": [
                 "Call POST /api/v1/compat/bind with a username.",
                 "Store data.mapping.listen_port.",
-                "Use data.mapping.access.http_proxy in future runs.",
+                "Use data.mapping.access.http_proxy or data.mapping.access.socks5_proxy in future runs.",
             ],
         },
     ]
