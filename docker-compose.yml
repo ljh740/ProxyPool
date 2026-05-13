@@ -1,5 +1,6 @@
 services:
   squid:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: squid/Dockerfile
